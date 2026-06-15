@@ -22,7 +22,11 @@ inputs:
     required: false
     default: ''
   wpscan-token:
-    description: 'Optional WPScan API token for cross-reference (not used yet; reserved for a later slice).'
+    description: >-
+      Optional WPScan API token. When supplied, per-plugin WPScan data is cross-referenced
+      through the same matcher to add Findings the free Wordfence feed missed. When omitted,
+      the Vulnerability Scan runs unchanged and needs zero secrets (the default). The token
+      is a secret — pass ${{ secrets.WPSCAN_API_TOKEN }}; it is masked in logs and never printed.
     required: false
     default: ''
   fail-on:

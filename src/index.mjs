@@ -9,6 +9,7 @@ import * as github from '@actions/github';
 import { runVulnScan } from './scan.mjs';
 import { fetchWordfenceFeed } from './feed.mjs';
 import { fetchPluginInfo } from './wporg.mjs';
+import { fetchWpscanPlugin, normalizeWpscanResponse } from './wpscan.mjs';
 import { makeIssueUpserter } from './issue.mjs';
 
 export async function run() {
@@ -23,6 +24,18 @@ export async function run() {
   // Optional path override for non-standard layouts; default to the checked-out repo.
   const siteRoot = core.getInput('site-path') || process.env.GITHUB_WORKSPACE || '.';
 
+  // Optional WPScan cross-reference (issue #7). Zero-secret default: with NO token the
+  // edge is simply not injected and the Vulnerability Scan runs exactly as before. The
+  // token is a SECRET — it is read from the Action input only and never logged. When
+  // present, mark it so the runner masks any accidental echo in logs.
+  const wpscanToken = core.getInput('wpscan-token');
+  let fetchWpscanData;
+  if (wpscanToken) {
+    core.setSecret(wpscanToken);
+    fetchWpscanData = async (slug) =>
+      normalizeWpscanResponse(await fetchWpscanPlugin(slug, wpscanToken));
+  }
+
   const { owner, repo } = github.context.repo;
   const repoSlug = `${owner}/${repo}`;
   const octokit = github.getOctokit(token);
@@ -32,6 +45,7 @@ export async function run() {
     repoSlug,
     fetchFeed: () => fetchWordfenceFeed(),
     fetchPluginInfo: (slug) => fetchPluginInfo(slug),
+    fetchWpscanData,
     upsertIssue: makeIssueUpserter(octokit, { owner, repo }),
   });
 

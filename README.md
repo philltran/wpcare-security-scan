@@ -5,7 +5,20 @@ GitHub Action** that each site repo calls from a thin ~15-line workflow. It surf
 latent security holes the normal update cycle misses, without running anything on the site
 (Pantheon-friendly, no paid plugin).
 
-> **Status (2026-06-15): alert only on new/worsened — the Finding differ (issue #6, v0.5.0).**
+> **Status (2026-06-15): optional WPScan cross-reference (issue #7, v0.6.0).**
+> The Vulnerability Scan now takes an **optional WPScan cross-reference** that deepens
+> coverage when a `WPSCAN_API_TOKEN` is supplied — and stays a **zero-secret default** when
+> it is not. With no token, behavior is unchanged and the scan needs no credentials; with a
+> token, per-plugin WPScan data is folded into the Wordfence dataset and matched through the
+> **same** version-range / severity matcher (no parallel path), adding Findings the free feed
+> missed. The fetch is a thin impure edge (`src/wpscan.mjs`, token-gated, fail-safe, like the
+> Wordfence loader) verified by recorded fixtures; normalization + the cross-source merge are
+> pure. The merge **dedups by CVE with Wordfence winning** (authoritative metadata), and
+> **still emits no-CVE WPScan vulns** — giving them a stable identity by carrying the WPScan
+> vuln id in the `cve` slot as `WPSCAN-<id>` (no schema change, so persistence + the differ
+> are untouched; rendered as a WPScan reference, not a CVE). See
+> [ADR-0006](docs/adr/0006-wpscan-cross-reference-merge.md). Earlier slice:
+> alert only on new/worsened — the Finding differ (issue #6, v0.5.0):
 > Alerts now fire **only on new or newly-worsened Findings**. A pure differ
 > (`src/differ.mjs`) takes the prior persisted Findings + the current scan and returns just
 > the new/worsened subset; the **failing workflow status gates on that subset alone**, so a
@@ -72,6 +85,8 @@ runs off-platform so a site compromise can't disable it.
   - 0002 — ship as a reusable Action in its own repo
   - 0003 — use the free Wordfence Intelligence feed as the primary source
   - 0004 — enumerate the filesystem deeply, not WordPress's plugin list
+  - 0005 — persist prior Findings in the deduped issue body (alert only on new/worsened)
+  - 0006 — merge the optional WPScan cross-reference into the Wordfence dataset
 - **PRD:** [philltran/wpcare-security-scan#1](https://github.com/philltran/wpcare-security-scan/issues/1)
   — the parent document the build is sliced from.
 
