@@ -81,7 +81,7 @@ const SEVERITY_RANK = {
   unknown: 0,
 };
 
-function severityRank(severity) {
+export function severityRank(severity) {
   return SEVERITY_RANK[severity] ?? 0;
 }
 

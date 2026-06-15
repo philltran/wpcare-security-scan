@@ -2,18 +2,25 @@
 //
 //   enumerate (pure) -> fetch feed (impure, injected) -> normalize (pure)
 //     -> match (pure) -> abandoned lookup (impure, injected) -> render + upsert
-//     issue (impure, injected) -> exit gate
+//     issue (impure, injected) -> diff vs. prior persisted Findings (pure) -> exit gate
 //
 // The impure edges (feed fetch, per-slug wordpress.org lookup, issue upsert) are
 // injected so this orchestrator is testable end-to-end against a fixture tree without
 // a live network or runner. The thin entrypoint (index.mjs) supplies the real
 // implementations.
+//
+// Alert-only-on-new: the deduped issue is the persistence layer. The upsert returns
+// the *prior* issue body (the thin impure read); the pure differ recovers the prior
+// Findings from it and keeps only the new/worsened subset, which alone gates the
+// failing workflow status. The issue itself is always updated in place with the
+// current Findings, so an unchanged site renders the same Findings yet runs GREEN.
 
 import { enumerateInventory } from './inventory.mjs';
 import { normalizeWordfenceFeed } from './wordfence.mjs';
 import { matchVulnerabilities, isAlertWorthy } from './matcher.mjs';
 import { abandonedFinding } from './abandoned.mjs';
-import { renderIssueTitle, renderIssueBody } from './report.mjs';
+import { renderIssueTitle, renderIssueBody, parsePersistedFindings } from './report.mjs';
+import { diffFindings } from './differ.mjs';
 
 // Bound the per-slug wordpress.org fan-out: a full-inventory site can carry 30+
 // plugins, and we will not query them all at once (socket/rate pressure on wp.org).
@@ -88,12 +95,22 @@ export async function runVulnScan({
   const title = renderIssueTitle(alertWorthy);
   const body = renderIssueBody(repoSlug, alertWorthy);
 
-  await upsertIssue({ repoSlug, title, body });
+  // Upsert in place. The returned `priorBody` is the existing issue's body from before
+  // this run (null on the first run, when no issue exists yet) — the thin impure read
+  // that feeds the pure diff.
+  const upsert = (await upsertIssue({ repoSlug, title, body })) || {};
+
+  // Alert only on the new/worsened subset: recover the prior persisted Findings and
+  // diff. The failing-status gate fires on this subset alone, so an unchanged site
+  // (same Findings, none new or worsened) runs GREEN.
+  const prior = parsePersistedFindings(upsert.priorBody);
+  const newOrWorsened = diffFindings(prior, alertWorthy);
 
   return {
     inventory,
     findings,
     alertWorthy: alertWorthy.length,
-    exitCode: alertWorthy.length > 0 ? 1 : 0,
+    newOrWorsened: newOrWorsened.length,
+    exitCode: newOrWorsened.length > 0 ? 1 : 0,
   };
 }

@@ -35,6 +35,8 @@ outputs:
     description: 'Total number of Findings emitted by the scan.'
   alert-count:
     description: 'Number of alert-worthy Findings (cve / abandoned / embedded).'
+  new-count:
+    description: 'Number of new or newly-worsened alert-worthy Findings since the last run (this alone gates the failing status).'
 
 runs:
   using: 'node24'

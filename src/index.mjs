@@ -37,15 +37,20 @@ export async function run() {
 
   core.setOutput('finding-count', String(result.findings.length));
   core.setOutput('alert-count', String(result.alertWorthy));
+  core.setOutput('new-count', String(result.newOrWorsened));
 
   core.info(
     `Scanned ${result.inventory.length} inventory item(s); `
-    + `${result.findings.length} Finding(s), ${result.alertWorthy} alert-worthy.`,
+    + `${result.findings.length} Finding(s), ${result.alertWorthy} alert-worthy, `
+    + `${result.newOrWorsened} new/worsened.`,
   );
 
+  // The failing workflow status gates ONLY on the new/worsened subset, so an
+  // unchanged site (its Findings already filed in the deduped issue) runs green.
   if (result.exitCode !== 0) {
     core.setFailed(
-      `${result.alertWorthy} alert-worthy Finding(s) — see the security scan issue.`,
+      `${result.newOrWorsened} new or worsened alert-worthy Finding(s) `
+      + '— see the security scan issue.',
     );
   }
 }

@@ -36956,8 +36956,15 @@ function abandonedFinding(item, response) {
 //   ISSUE_LABEL                       — the label that feeds triage/ship-issues
 //   markerFor(repoSlug)               — the stable hidden body marker for a site
 //   renderIssueTitle(findings)        — issue title
-//   renderIssueBody(repoSlug, fnds)   — issue body (carries the marker)
+//   renderIssueBody(repoSlug, fnds)   — issue body (carries the marker + state)
 //   findMarkedIssue(issues, marker)   — the existing issue to upsert, or null
+//   parsePersistedFindings(body)      — the prior Findings recovered from a body
+//
+// The deduped issue is the scanner's persistence layer: each run embeds the current
+// alert-worthy Findings in the body as a hidden, machine-readable state block so the
+// *next* run can read them back as the prior state and diff (alert only on the
+// new/worsened subset; see src/differ.mjs). The block is a single HTML comment so it
+// never renders to a human, mirroring the dedup marker's hidden-comment idiom.
 
 // The dedup label. The exact name was flagged "deferred to implementation" in
 // CONTEXT.md; this is the first concrete choice and stays stable across runs.
@@ -36991,6 +36998,31 @@ function renderFinding(f) {
   return lines.join('\n');
 }
 
+// The hidden, machine-readable state block. A single HTML comment wrapping a JSON
+// array of the current Findings, fenced by a sentinel so the parser can recover it
+// precisely without colliding with the dedup marker (also an HTML comment). Only the
+// fields the differ needs to identify and rank a Finding are persisted — the body
+// stays small and the human-readable prose remains the source of detail.
+const STATE_OPEN = '<!-- wpcare-security-scan:state ';
+const STATE_CLOSE = ' -->';
+const STATE_RE = /<!-- wpcare-security-scan:state ([\s\S]*?) -->/;
+
+function persistableFinding(f) {
+  return {
+    type: f.type,
+    severity: f.severity,
+    slug: f.slug,
+    version: f.version,
+    location: f.location,
+    ...(f.cve ? { cve: f.cve } : {}),
+  };
+}
+
+function renderState(findings) {
+  const payload = JSON.stringify(findings.map(persistableFinding));
+  return `${STATE_OPEN}${payload}${STATE_CLOSE}`;
+}
+
 function renderIssueBody(repoSlug, findings) {
   const list = Array.isArray(findings) ? findings : [];
   const parts = [
@@ -37004,7 +37036,25 @@ function renderIssueBody(repoSlug, findings) {
   if (!list.length) {
     parts.push('No alert-worthy Findings in the latest scan.');
   }
+  // The persisted state block always trails the body, even when empty, so the next
+  // run reads an unambiguous prior set (an empty array, not "no state at all").
+  parts.push('', renderState(list));
   return parts.join('\n');
+}
+
+// Recover the prior persisted Findings from a deduped issue body. Fail-safe: a
+// missing body, no state block, or unparseable JSON yields an empty array (the next
+// run treats every current Finding as new rather than crashing on a malformed issue).
+function parsePersistedFindings(body) {
+  if (typeof body !== 'string') return [];
+  const m = STATE_RE.exec(body);
+  if (!m) return [];
+  try {
+    const parsed = JSON.parse(m[1]);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 function findMarkedIssue(issues, marker) {
@@ -37017,17 +37067,86 @@ function findMarkedIssue(issues, marker) {
   return null;
 }
 
+;// CONCATENATED MODULE: ./src/differ.mjs
+// Finding differ / dedup — PURE, deep module. Drives "alert only on new/worsened."
+//
+//   diffFindings(priorFindings, currentFindings) -> [ Finding ]
+//
+// Given the prior persisted Findings (read from the existing deduped issue) and the
+// current scan's Findings, return only the subset that should fire an alert: the
+// *new* Findings (no prior Finding shares their identity) and the *worsened* ones (a
+// prior Finding shares their identity but the current severity outranks it). When the
+// current Findings match the prior set exactly, the subset is empty — repeated runs
+// are idempotent and the failing-status gate stays green. A severity *increase* on an
+// existing Finding re-alerts; an equal or lower severity does not.
+//
+// Pure and fixture-tested: no network, no persistence. The thin impure read of the
+// prior Findings out of the deduped issue body lives at the reporter edge, not here.
+
+
+
+// Finding identity — what makes two Findings "the same" across runs, so a severity
+// bump is a *worsening* of one Finding rather than a brand-new one. Keyed on the
+// stable facets only: the Finding `type`, the `slug`, the on-disk `location`, and —
+// for a CVE — the `cve` id (so two distinct CVEs against one plugin are two distinct
+// Findings). Deliberately NOT keyed on `version`: a partial update that leaves the
+// item still vulnerable is the same unresolved Finding, not a new one, so it must not
+// spuriously re-alert. `severity` is excluded too — it is the thing we compare to
+// decide "worsened," not part of identity.
+function findingIdentity(finding) {
+  if (!finding || typeof finding !== 'object') return '';
+  return [finding.type, finding.slug, finding.location, finding.cve ?? '']
+    .map((p) => String(p ?? ''))
+    .join('|');
+}
+
+function diffFindings(priorFindings, currentFindings) {
+  const prior = Array.isArray(priorFindings) ? priorFindings : [];
+  const current = Array.isArray(currentFindings) ? currentFindings : [];
+
+  // Index the prior set by identity, keeping the strongest prior severity seen for
+  // each identity so a worsening is measured against the worst we last reported.
+  const priorRankByIdentity = new Map();
+  for (const f of prior) {
+    const id = findingIdentity(f);
+    const rank = severityRank(f.severity);
+    const seen = priorRankByIdentity.get(id);
+    if (seen === undefined || rank > seen) priorRankByIdentity.set(id, rank);
+  }
+
+  const subset = [];
+  for (const f of current) {
+    const id = findingIdentity(f);
+    if (!priorRankByIdentity.has(id)) {
+      subset.push(f); // new: no prior Finding shares this identity
+      continue;
+    }
+    if (severityRank(f.severity) > priorRankByIdentity.get(id)) {
+      subset.push(f); // worsened: same identity, strictly higher severity
+    }
+  }
+
+  return subset;
+}
+
 ;// CONCATENATED MODULE: ./src/scan.mjs
 // Vulnerability Scan orchestrator — the pure spine that wires the module seams:
 //
 //   enumerate (pure) -> fetch feed (impure, injected) -> normalize (pure)
 //     -> match (pure) -> abandoned lookup (impure, injected) -> render + upsert
-//     issue (impure, injected) -> exit gate
+//     issue (impure, injected) -> diff vs. prior persisted Findings (pure) -> exit gate
 //
 // The impure edges (feed fetch, per-slug wordpress.org lookup, issue upsert) are
 // injected so this orchestrator is testable end-to-end against a fixture tree without
 // a live network or runner. The thin entrypoint (index.mjs) supplies the real
 // implementations.
+//
+// Alert-only-on-new: the deduped issue is the persistence layer. The upsert returns
+// the *prior* issue body (the thin impure read); the pure differ recovers the prior
+// Findings from it and keeps only the new/worsened subset, which alone gates the
+// failing workflow status. The issue itself is always updated in place with the
+// current Findings, so an unchanged site renders the same Findings yet runs GREEN.
+
 
 
 
@@ -37108,13 +37227,23 @@ async function runVulnScan({
   const title = renderIssueTitle(alertWorthy);
   const body = renderIssueBody(repoSlug, alertWorthy);
 
-  await upsertIssue({ repoSlug, title, body });
+  // Upsert in place. The returned `priorBody` is the existing issue's body from before
+  // this run (null on the first run, when no issue exists yet) — the thin impure read
+  // that feeds the pure diff.
+  const upsert = (await upsertIssue({ repoSlug, title, body })) || {};
+
+  // Alert only on the new/worsened subset: recover the prior persisted Findings and
+  // diff. The failing-status gate fires on this subset alone, so an unchanged site
+  // (same Findings, none new or worsened) runs GREEN.
+  const prior = parsePersistedFindings(upsert.priorBody);
+  const newOrWorsened = diffFindings(prior, alertWorthy);
 
   return {
     inventory,
     findings,
     alertWorthy: alertWorthy.length,
-    exitCode: alertWorthy.length > 0 ? 1 : 0,
+    newOrWorsened: newOrWorsened.length,
+    exitCode: newOrWorsened.length > 0 ? 1 : 0,
   };
 }
 
@@ -37183,6 +37312,12 @@ async function fetchPluginInfo(slug, client = new lib_HttpClient('wpcare-securit
 // One issue per site, found by a stable marker (label + a hidden body marker):
 // created if absent, updated in place if present. Pure rendering and marker/match
 // helpers live in src/report.mjs; this module is only the thin Octokit wiring.
+//
+// It also performs the thin impure *read* the differ depends on: the existing issue's
+// body from BEFORE this run carries the previously-persisted Findings, so the upsert
+// returns it as `priorBody` (null on the first run). The orchestrator parses it and
+// diffs, alerting only on the new/worsened subset. Keep the read thin — all the diff
+// logic stays pure in src/differ.mjs.
 
 
 
@@ -37200,16 +37335,22 @@ function makeIssueUpserter(octokit, { owner, repo }) {
     const existing = findMarkedIssue(open, marker);
 
     if (existing) {
+      // Capture the prior body BEFORE overwriting it — it holds the persisted Findings
+      // the differ reads to alert only on the new/worsened subset.
+      const priorBody = typeof existing.body === 'string' ? existing.body : null;
       const res = await octokit.rest.issues.update({
         owner, repo, issue_number: existing.number, title, body,
       });
-      return { number: existing.number, created: false, url: res.data.html_url };
+      return {
+        number: existing.number, created: false, url: res.data.html_url, priorBody,
+      };
     }
 
     const res = await octokit.rest.issues.create({
       owner, repo, title, body, labels: [ISSUE_LABEL],
     });
-    return { number: res.data.number, created: true, url: res.data.html_url };
+    // First run for this site: no prior issue, so no prior Findings — all are new.
+    return { number: res.data.number, created: true, url: res.data.html_url, priorBody: null };
   };
 }
 
@@ -37253,15 +37394,20 @@ async function run() {
 
   setOutput('finding-count', String(result.findings.length));
   setOutput('alert-count', String(result.alertWorthy));
+  setOutput('new-count', String(result.newOrWorsened));
 
   info(
     `Scanned ${result.inventory.length} inventory item(s); `
-    + `${result.findings.length} Finding(s), ${result.alertWorthy} alert-worthy.`,
+    + `${result.findings.length} Finding(s), ${result.alertWorthy} alert-worthy, `
+    + `${result.newOrWorsened} new/worsened.`,
   );
 
+  // The failing workflow status gates ONLY on the new/worsened subset, so an
+  // unchanged site (its Findings already filed in the deduped issue) runs green.
   if (result.exitCode !== 0) {
     setFailed(
-      `${result.alertWorthy} alert-worthy Finding(s) — see the security scan issue.`,
+      `${result.newOrWorsened} new or worsened alert-worthy Finding(s) `
+      + '— see the security scan issue.',
     );
   }
 }

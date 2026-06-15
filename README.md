@@ -5,15 +5,24 @@ GitHub Action** that each site repo calls from a thin ~15-line workflow. It surf
 latent security holes the normal update cycle misses, without running anything on the site
 (Pantheon-friendly, no paid plugin).
 
-> **Status (2026-06-15): abandoned/closed plugin detection (issue #5, v0.4.0).** Each
-> top-level plugin slug is now checked against the free, no-auth wordpress.org
+> **Status (2026-06-15): alert only on new/worsened — the Finding differ (issue #6, v0.5.0).**
+> Alerts now fire **only on new or newly-worsened Findings**. A pure differ
+> (`src/differ.mjs`) takes the prior persisted Findings + the current scan and returns just
+> the new/worsened subset; the **failing workflow status gates on that subset alone**, so a
+> repeated run over an unchanged site is **GREEN** even though its Findings are still filed,
+> while a **severity increase** on an existing Finding re-alerts. The prior state is persisted
+> in the deduped issue body as a hidden JSON block and read back on the next run (the thin
+> impure edge in `src/issue.mjs`); Finding identity is `type|slug|location|cve`, and "worsened"
+> reuses the matcher's existing severity rank (see [ADR-0005](docs/adr/0005-persist-prior-findings-in-issue-body.md)).
+> Earlier slices: abandoned/closed plugin detection (issue #5, v0.4.0) — each
+> top-level plugin slug is checked against the free, no-auth wordpress.org
 > plugin_information endpoint; a plugin that has been **closed or removed** (hence has no
 > update channel) raises an **Abandoned-plugin Finding** whose remediation is **remove**,
 > never update. The wordpress.org query is a thin impure edge (`src/wporg.mjs`, like the
 > Wordfence feed loader) verified by recorded transcript, while the closed/removed → Finding
 > decision (`src/abandoned.mjs`) is pure and pinned by fixtures offline; the per-slug
 > lookup fans out with bounded concurrency and fail-safes a flaky lookup to no alert.
-> Earlier slices: vuln matcher hardened (#4, v0.3.0) decides
+> vuln matcher hardened (#4, v0.3.0) decides
 > CVE membership at the `fixed_in` boundary with a WordPress-tolerant version comparison —
 > a version below `fixed_in` is a Finding; at or above is patched and yields none — maps the
 > CVE's CVSS score onto the Finding severity (critical/high/medium/low/none, plus `unknown`

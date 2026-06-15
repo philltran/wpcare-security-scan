@@ -7,6 +7,7 @@ import {
   renderIssueTitle,
   renderIssueBody,
   findMarkedIssue,
+  parsePersistedFindings,
 } from '../src/report.mjs';
 
 const finding = {
@@ -49,4 +50,24 @@ test('findMarkedIssue locates the one issue carrying the marker', () => {
 test('exposes a stable label for dedup', () => {
   assert.equal(typeof ISSUE_LABEL, 'string');
   assert.ok(ISSUE_LABEL.length > 0);
+});
+
+test('persists the current Findings in the body and reads them back (round-trip)', () => {
+  const body = renderIssueBody('acme/site', [finding]);
+  const restored = parsePersistedFindings(body);
+  assert.equal(restored.length, 1, 'the prior Findings are recoverable from the body');
+  assert.equal(restored[0].cve, 'CVE-2020-35489');
+  assert.equal(restored[0].slug, 'contact-form-7');
+  assert.equal(restored[0].severity, 'critical');
+  assert.equal(restored[0].type, 'cve');
+});
+
+test('the persisted state block is hidden (an HTML comment) and absent from a missing body', () => {
+  const body = renderIssueBody('acme/site', [finding]);
+  // The state is carried in an HTML comment so it never renders in the issue.
+  assert.match(body, /<!--[\s\S]*-->/);
+  // No body, no marker, or a body that never carried state => empty list, never throws.
+  assert.deepEqual(parsePersistedFindings(undefined), []);
+  assert.deepEqual(parsePersistedFindings('just some prose with no state block'), []);
+  assert.deepEqual(parsePersistedFindings(renderIssueBody('acme/site', [])), []);
 });

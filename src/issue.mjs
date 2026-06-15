@@ -2,6 +2,12 @@
 // One issue per site, found by a stable marker (label + a hidden body marker):
 // created if absent, updated in place if present. Pure rendering and marker/match
 // helpers live in src/report.mjs; this module is only the thin Octokit wiring.
+//
+// It also performs the thin impure *read* the differ depends on: the existing issue's
+// body from BEFORE this run carries the previously-persisted Findings, so the upsert
+// returns it as `priorBody` (null on the first run). The orchestrator parses it and
+// diffs, alerting only on the new/worsened subset. Keep the read thin — all the diff
+// logic stays pure in src/differ.mjs.
 
 import { ISSUE_LABEL, markerFor, findMarkedIssue } from './report.mjs';
 
@@ -19,15 +25,21 @@ export function makeIssueUpserter(octokit, { owner, repo }) {
     const existing = findMarkedIssue(open, marker);
 
     if (existing) {
+      // Capture the prior body BEFORE overwriting it — it holds the persisted Findings
+      // the differ reads to alert only on the new/worsened subset.
+      const priorBody = typeof existing.body === 'string' ? existing.body : null;
       const res = await octokit.rest.issues.update({
         owner, repo, issue_number: existing.number, title, body,
       });
-      return { number: existing.number, created: false, url: res.data.html_url };
+      return {
+        number: existing.number, created: false, url: res.data.html_url, priorBody,
+      };
     }
 
     const res = await octokit.rest.issues.create({
       owner, repo, title, body, labels: [ISSUE_LABEL],
     });
-    return { number: res.data.number, created: true, url: res.data.html_url };
+    // First run for this site: no prior issue, so no prior Findings — all are new.
+    return { number: res.data.number, created: true, url: res.data.html_url, priorBody: null };
   };
 }
