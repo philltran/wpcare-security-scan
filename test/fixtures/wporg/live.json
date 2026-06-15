@@ -1,0 +1,14 @@
+{
+  "statusCode": 200,
+  "body": {
+    "name": "Akismet Anti-spam: Spam Protection",
+    "slug": "akismet",
+    "version": "5.3",
+    "author": "Automattic - Anti-spam Team",
+    "requires": "5.8",
+    "tested": "6.5",
+    "last_updated": "2024-04-09 5:30pm GMT",
+    "active_installs": 5000000,
+    "download_link": "https://downloads.wordpress.org/plugin/akismet.5.3.zip"
+  }
+}

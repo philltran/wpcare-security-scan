@@ -5,18 +5,26 @@ GitHub Action** that each site repo calls from a thin ~15-line workflow. It surf
 latent security holes the normal update cycle misses, without running anything on the site
 (Pantheon-friendly, no paid plugin).
 
-> **Status (2026-06-15): vuln matcher hardened (issue #4, v0.3.0).** The matcher now decides
+> **Status (2026-06-15): abandoned/closed plugin detection (issue #5, v0.4.0).** Each
+> top-level plugin slug is now checked against the free, no-auth wordpress.org
+> plugin_information endpoint; a plugin that has been **closed or removed** (hence has no
+> update channel) raises an **Abandoned-plugin Finding** whose remediation is **remove**,
+> never update. The wordpress.org query is a thin impure edge (`src/wporg.mjs`, like the
+> Wordfence feed loader) verified by recorded transcript, while the closed/removed → Finding
+> decision (`src/abandoned.mjs`) is pure and pinned by fixtures offline; the per-slug
+> lookup fans out with bounded concurrency and fail-safes a flaky lookup to no alert.
+> Earlier slices: vuln matcher hardened (#4, v0.3.0) decides
 > CVE membership at the `fixed_in` boundary with a WordPress-tolerant version comparison —
 > a version below `fixed_in` is a Finding; at or above is patched and yields none — maps the
 > CVE's CVSS score onto the Finding severity (critical/high/medium/low/none, plus `unknown`
 > for a missing score), and returns all Findings (CVE + embedded together) most-severe-first
-> so the worst surface first. Earlier slices: deep + embedded enumeration (#3, v0.2.0) walks
+> so the worst surface first. deep + embedded enumeration (#3, v0.2.0) walks
 > `wp-content` deeply — top-level plugins, mu-plugins, drop-ins, all themes (active or not),
 > and core — and recursively sniffs headers nested inside other plugins/themes, so a plugin
 > **bundled inside a theme** (the Slider Revolution blind spot) is caught and flagged
 > `embedded: true`; the walking skeleton (#2, v0.1.0) wired the end-to-end path — enumerate →
-> match the Wordfence feed → Findings → deduped per-site GitHub issue + failing gate. Later
-> slices add Abandoned-plugin detection and Drift Detection.
+> match the Wordfence feed → Findings → deduped per-site GitHub issue + failing gate. A later
+> phase adds Drift Detection.
 
 ## What it does
 

@@ -1,0 +1,11 @@
+{
+  "statusCode": 200,
+  "body": {
+    "error": "closed",
+    "name": "BulletProof Security",
+    "slug": "bulletproof-security",
+    "closed": true,
+    "closed_date": "2023-09-11",
+    "reason": "Author Request"
+  }
+}

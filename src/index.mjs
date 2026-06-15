@@ -8,6 +8,7 @@ import * as github from '@actions/github';
 
 import { runVulnScan } from './scan.mjs';
 import { fetchWordfenceFeed } from './feed.mjs';
+import { fetchPluginInfo } from './wporg.mjs';
 import { makeIssueUpserter } from './issue.mjs';
 
 export async function run() {
@@ -30,6 +31,7 @@ export async function run() {
     siteRoot,
     repoSlug,
     fetchFeed: () => fetchWordfenceFeed(),
+    fetchPluginInfo: (slug) => fetchPluginInfo(slug),
     upsertIssue: makeIssueUpserter(octokit, { owner, repo }),
   });
 

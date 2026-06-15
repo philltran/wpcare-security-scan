@@ -36864,6 +36864,87 @@ function matchVulnerabilities(inventory, normalizedDataset) {
   return findings;
 }
 
+;// CONCATENATED MODULE: ./src/abandoned.mjs
+// Abandoned/closed plugin detector — PURE decision module.
+//
+//   isAbandonedResponse(wporgResponse) -> boolean
+//   abandonedFinding(item, wporgResponse) -> Finding | null
+//
+// A plugin that has been *closed* or *removed* on wordpress.org has no update
+// channel: the WordPress update screen will never flag it and the site owner cannot
+// patch it. Its remediation is therefore *removal*, never *update* (CONTEXT.md
+// "Abandoned plugin"; ADR-0003 names the data-source split).
+//
+// The live wordpress.org plugin_information query is a thin IMPURE edge (src/wporg.mjs,
+// mirroring src/feed.mjs); it is verified by a recorded transcript, not a live unit
+// test. This module is the PURE half: given the *recorded* response it decides the
+// closed/removed signal and shapes the Finding, so the decision is pinned by fixtures
+// with no network.
+//
+// The closed/removed signal, modeled the way the feed loader models its responses:
+// wordpress.org's plugin_information endpoint returns a full plugin object (200, no
+// `error`) for a live/maintained plugin, and an error for one that is gone — either a
+// non-2xx status (e.g. 404 "Plugin not found.") or a 200 body carrying an `error`
+// field (e.g. {"error":"closed", "closed":true}). Either signal => abandoned. Anything
+// ambiguous (a missing/garbage response from a transport error) is deliberately NOT
+// treated as abandoned, so a flaky lookup never fires a false alert.
+//
+// Finding shape (the v1 contract; same shape as the embedded Finding — no fixed_in /
+// cve / url, since there is no patch to point at):
+//   { type:'abandoned', severity, slug, version, kind, location, remediation }
+// `abandoned` is one of the matcher's ALERT_WORTHY types, so the Finding trips the gate.
+
+function isOk(statusCode) {
+  return typeof statusCode === 'number' && statusCode >= 200 && statusCode < 300;
+}
+
+// Decide the closed/removed signal from a *recorded* wp.org response of the shape the
+// thin edge returns: { statusCode, body }. Pure and fixture-driven.
+function isAbandonedResponse(response) {
+  if (!response || typeof response !== 'object') return false;
+  const { statusCode, body } = response;
+
+  // A non-2xx status (404 "Plugin not found.", etc.) is a removed/unknown plugin.
+  if (statusCode !== undefined && !isOk(statusCode)) return true;
+
+  // A 2xx body carrying an `error` field (e.g. {"error":"closed"}) is a closed plugin.
+  if (body && typeof body === 'object' && body.error) return true;
+
+  // An explicit closed flag, defensively, even without the error string.
+  if (body && typeof body === 'object' && body.closed === true) return true;
+
+  return false;
+}
+
+// Build the Abandoned Finding for an item. Closed and removed plugins differ only in
+// the human note; both are no-update-channel and resolved by removal.
+function abandoned_remediationFor(item, body) {
+  const closedDate = body && typeof body === 'object' ? body.closed_date : null;
+  const when = closedDate ? ` (closed ${closedDate})` : '';
+  return (
+    `Remove the plugin "${item.slug}"${when}: it has been closed or removed on `
+    + 'wordpress.org and no longer receives security fixes, so it cannot be patched '
+    + 'in place. Replace it with a maintained alternative or delete it.'
+  );
+}
+
+function abandonedFinding(item, response) {
+  if (!item || item.kind !== 'plugin') return null;
+  if (!isAbandonedResponse(response)) return null;
+
+  const body = response && typeof response === 'object' ? response.body : null;
+
+  return {
+    type: 'abandoned',
+    severity: 'high',
+    slug: item.slug,
+    version: item.version,
+    kind: item.kind,
+    location: item.path,
+    remediation: abandoned_remediationFor(item, body),
+  };
+}
+
 ;// CONCATENATED MODULE: ./src/report.mjs
 // Reporter — pure rendering + issue-matching helpers.
 //
@@ -36940,21 +37021,75 @@ function findMarkedIssue(issues, marker) {
 // Vulnerability Scan orchestrator — the pure spine that wires the module seams:
 //
 //   enumerate (pure) -> fetch feed (impure, injected) -> normalize (pure)
-//     -> match (pure) -> render + upsert issue (impure, injected) -> exit gate
+//     -> match (pure) -> abandoned lookup (impure, injected) -> render + upsert
+//     issue (impure, injected) -> exit gate
 //
-// The impure edges (feed fetch, issue upsert) are injected so this orchestrator is
-// testable end-to-end against a fixture tree without a live network or runner. The
-// thin entrypoint (index.mjs) supplies the real implementations.
+// The impure edges (feed fetch, per-slug wordpress.org lookup, issue upsert) are
+// injected so this orchestrator is testable end-to-end against a fixture tree without
+// a live network or runner. The thin entrypoint (index.mjs) supplies the real
+// implementations.
 
 
 
 
 
+
+
+// Bound the per-slug wordpress.org fan-out: a full-inventory site can carry 30+
+// plugins, and we will not query them all at once (socket/rate pressure on wp.org).
+const WPORG_CONCURRENCY = 5;
+
+// Detect Abandoned (closed/removed) plugins. For each *top-level* plugin slug (an
+// embedded plugin is handled by the matcher's embedded detector; core/themes/drop-ins
+// are not wordpress.org plugins), query the injected impure edge and let the pure
+// decision (abandonedFinding) shape the verdict. The lookup is fail-safe: a rejected
+// or garbage response yields no Finding, so a flaky lookup never fires a false alert.
+async function detectAbandoned(inventory, fetchPluginInfo) {
+  if (typeof fetchPluginInfo !== 'function') return [];
+
+  // Unique top-level plugin slugs only — never query the same slug twice.
+  const seen = new Set();
+  const targets = [];
+  for (const item of inventory) {
+    if (!item || item.kind !== 'plugin' || item.embedded === true) continue;
+    if (seen.has(item.slug)) continue;
+    seen.add(item.slug);
+    targets.push(item);
+  }
+
+  const findings = [];
+  // Simple bounded worker pool over a shared cursor — concurrent but capped.
+  let cursor = 0;
+  async function worker() {
+    while (cursor < targets.length) {
+      const item = targets[cursor];
+      cursor += 1;
+      let response = null;
+      try {
+        response = await fetchPluginInfo(item.slug);
+      } catch {
+        // A transport failure is not evidence of abandonment — fail safe.
+        response = null;
+      }
+      const finding = abandonedFinding(item, response);
+      if (finding) findings.push(finding);
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(WPORG_CONCURRENCY, targets.length) },
+    () => worker(),
+  );
+  await Promise.all(workers);
+
+  return findings;
+}
 
 async function runVulnScan({
   siteRoot,
   repoSlug,
   fetchFeed,
+  fetchPluginInfo,
   upsertIssue,
 } = {}) {
   const inventory = enumerateInventory(siteRoot);
@@ -36963,6 +37098,11 @@ async function runVulnScan({
   const dataset = normalizeWordfenceFeed(rawFeed);
 
   const findings = matchVulnerabilities(inventory, dataset);
+
+  // Fold in Abandoned (closed/removed) Findings from the wordpress.org lookup.
+  const abandoned = await detectAbandoned(inventory, fetchPluginInfo);
+  for (const f of abandoned) findings.push(f);
+
   const alertWorthy = findings.filter(isAlertWorthy);
 
   const title = renderIssueTitle(alertWorthy);
@@ -36996,6 +37136,46 @@ async function fetchWordfenceFeed(url = WORDFENCE_FEED_URL) {
     throw new Error(`Wordfence feed fetch failed: HTTP ${res.statusCode}`);
   }
   return res.result || {};
+}
+
+;// CONCATENATED MODULE: ./src/wporg.mjs
+// wordpress.org plugin-info loader — the IMPURE edge for Abandoned/closed detection.
+// Kept deliberately thin (mirrors src/feed.mjs): query the free, no-auth wordpress.org
+// plugin_information endpoint for a single slug and hand the raw { statusCode, body }
+// to the pure decision (src/abandoned.mjs). NO decision logic lives here.
+//
+// This edge is verified by an example run / recorded transcript (see
+// test/fixtures/wporg/*.json), not a live unit test — the closed/removed -> Finding
+// decision is the part pinned offline. See ADR-0003, CONTEXT.md "Abandoned plugin".
+//
+// The endpoint returns a full JSON plugin object (HTTP 200) for a live plugin, and an
+// error for a gone one: a 404 ("Plugin not found.") for a removed plugin, or a 200
+// body carrying {"error":"closed", ...} for a closed plugin. @actions/http-client's
+// getJson does not throw on a non-2xx — it returns the status and a (possibly null)
+// parsed result — so both signals are surfaced as data for the pure layer to read.
+
+
+
+const WPORG_PLUGIN_INFO_URL =
+  'https://api.wordpress.org/plugins/info/1.2/';
+
+// Build the plugin_information query URL for a slug. Encoded so an odd slug can never
+// break out of the query string.
+function pluginInfoUrl(slug, base = WPORG_PLUGIN_INFO_URL) {
+  const u = new URL(base);
+  u.searchParams.set('action', 'plugin_information');
+  u.searchParams.set('request[slug]', String(slug ?? ''));
+  return u.toString();
+}
+
+// Fetch one slug's plugin info. Returns { statusCode, body } — the raw shape the pure
+// decision (isAbandonedResponse / abandonedFinding) consumes. A transport-level
+// failure rejects; the caller decides whether a lookup miss should be fatal (it should
+// not — a flaky lookup must not masquerade as a closed plugin, which is why the pure
+// layer fail-safes an absent/garbage response to "not abandoned").
+async function fetchPluginInfo(slug, client = new lib_HttpClient('wpcare-security-scan')) {
+  const res = await client.getJson(pluginInfoUrl(slug));
+  return { statusCode: res.statusCode, body: res.result ?? null };
 }
 
 ;// CONCATENATED MODULE: ./src/issue.mjs
@@ -37046,6 +37226,7 @@ function makeIssueUpserter(octokit, { owner, repo }) {
 
 
 
+
 async function run() {
   const mode = getInput('mode') || 'vuln';
   if (mode !== 'vuln') {
@@ -37066,6 +37247,7 @@ async function run() {
     siteRoot,
     repoSlug,
     fetchFeed: () => fetchWordfenceFeed(),
+    fetchPluginInfo: (slug) => fetchPluginInfo(slug),
     upsertIssue: makeIssueUpserter(octokit, { owner, repo }),
   });
 
