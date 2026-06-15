@@ -1,6 +1,6 @@
 {
   "name": "wpcare-security-scan",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Off-platform WordPress security scanner, distributed as a reusable GitHub Action.",
   "type": "module",

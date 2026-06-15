@@ -5,15 +5,18 @@ GitHub Action** that each site repo calls from a thin ~15-line workflow. It surf
 latent security holes the normal update cycle misses, without running anything on the site
 (Pantheon-friendly, no paid plugin).
 
-> **Status (2026-06-15): deep + embedded enumeration shipped (issue #3, v0.2.0).** The
-> Vulnerability Scan now walks `wp-content` deeply — top-level plugins, mu-plugins, drop-ins,
-> all themes (active or not), and core — and recursively sniffs headers nested inside other
-> plugins/themes, so a plugin **bundled inside a theme** (the Slider Revolution blind spot) is
-> caught and flagged `embedded: true`. An Embedded plugin raises an alert-worthy Finding even
-> with no CVE; a false "embedded copy" is a triageable Finding, never a fatal error. The
-> earlier walking skeleton (issue #2) wired the end-to-end path — enumerate → match the
-> Wordfence feed → Findings → deduped per-site GitHub issue + failing gate. Later slices
-> thicken matching (range satisfaction, Abandoned plugins) and add Drift Detection.
+> **Status (2026-06-15): vuln matcher hardened (issue #4, v0.3.0).** The matcher now decides
+> CVE membership at the `fixed_in` boundary with a WordPress-tolerant version comparison —
+> a version below `fixed_in` is a Finding; at or above is patched and yields none — maps the
+> CVE's CVSS score onto the Finding severity (critical/high/medium/low/none, plus `unknown`
+> for a missing score), and returns all Findings (CVE + embedded together) most-severe-first
+> so the worst surface first. Earlier slices: deep + embedded enumeration (#3, v0.2.0) walks
+> `wp-content` deeply — top-level plugins, mu-plugins, drop-ins, all themes (active or not),
+> and core — and recursively sniffs headers nested inside other plugins/themes, so a plugin
+> **bundled inside a theme** (the Slider Revolution blind spot) is caught and flagged
+> `embedded: true`; the walking skeleton (#2, v0.1.0) wired the end-to-end path — enumerate →
+> match the Wordfence feed → Findings → deduped per-site GitHub issue + failing gate. Later
+> slices add Abandoned-plugin detection and Drift Detection.
 
 ## What it does
 

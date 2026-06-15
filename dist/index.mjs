@@ -36711,11 +36711,17 @@ function normalizeWordfenceFeed(rawFeed) {
 //   matchVulnerabilities(inventory, normalizedDataset) -> [ Finding ]
 //
 // Decides version-range satisfaction and severity, emitting a Finding per matched
-// inventory item. This slice does the thin single-match: a plugin is affected when
-// its installed version is strictly below the CVE's `fixed_in` (the `old < fixed_in`
-// half of the prior-art `old < fixed_in <= new` logic, ported — not imported — from
-// pt-claude-skills). Issue #4 hardens range satisfaction (open-ended ranges,
-// pre-releases, multiple disjoint ranges).
+// inventory item. A plugin is affected at a CVE when its installed version is
+// strictly below that CVE's `fixed_in` (the `old < fixed_in` boundary half of the
+// prior-art `old < fixed_in <= new` logic, ported — not imported — from
+// pt-claude-skills): below `fixed_in` is vulnerable; at or above is patched and
+// yields no CVE Finding. Version comparison is segment-by-segment and tolerant of
+// WordPress's loose, non-strict-semver version strings (see `compareVersions`).
+//
+// CVSS maps onto the Finding severity vocabulary (critical/high/medium/low/none,
+// plus `unknown` for a missing score), and the full Finding list (CVE + embedded
+// together) is returned most-severe-first via a stable sort so the worst Findings
+// surface first while equal-severity Findings keep inventory order.
 //
 // Finding shape (the v1 contract):
 //   { type, severity, slug, version, kind, location, fixed_in?, cve?, url?, remediation }
@@ -36756,7 +36762,11 @@ function isAffected(installed, fixedIn) {
 }
 
 // Map a CVSS base score to a severity band (CVSS v3.x qualitative ratings).
+// A missing score (null/undefined/empty) is genuinely *unknown* — it is not the
+// same as a scored 0.0 ("none"). Note `Number(null)` is 0 and `Number('')` is 0, so
+// the absence is checked explicitly before coercing.
 function severityFromCvss(score) {
+  if (score === null || score === undefined || score === '') return 'unknown';
   const n = Number(score);
   if (!Number.isFinite(n)) return 'unknown';
   if (n >= 9.0) return 'critical';
@@ -36764,6 +36774,29 @@ function severityFromCvss(score) {
   if (n >= 4.0) return 'medium';
   if (n > 0.0) return 'low';
   return 'none';
+}
+
+// Severity ordering for surfacing the worst Findings first. Higher rank = more
+// urgent. `unknown` and `none` rank below the scored bands so a confidently-low
+// Finding still outranks an unscored one. Used by a *stable* sort, so Findings of
+// equal severity keep their enumeration order (inventory order).
+const SEVERITY_RANK = {
+  critical: 5,
+  high: 4,
+  medium: 3,
+  low: 2,
+  none: 1,
+  unknown: 0,
+};
+
+function severityRank(severity) {
+  return SEVERITY_RANK[severity] ?? 0;
+}
+
+// Order most-severe-first. Array.prototype.sort is stable in modern Node, so ties
+// preserve insertion order — no extra index bookkeeping needed.
+function bySeverityDesc(a, b) {
+  return severityRank(b.severity) - severityRank(a.severity);
 }
 
 function remediationFor(slug, fixedIn) {
@@ -36822,6 +36855,11 @@ function matchVulnerabilities(inventory, normalizedDataset) {
       });
     }
   }
+
+  // Surface the worst first: a stable, most-severe-first sort over the full Finding
+  // list (CVE + embedded together), so a critical CVE leads and equal-severity
+  // Findings retain inventory order.
+  findings.sort(bySeverityDesc);
 
   return findings;
 }
