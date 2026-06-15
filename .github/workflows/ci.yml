@@ -1,0 +1,27 @@
+# CI for The Action's own repo: run the test suite and guard the committed dist/
+# bundle against drift (a JS action runs the committed bundle, not node_modules, so a
+# stale dist/ silently ships old logic). Third-party actions are pinned to a full SHA.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'        # match the action's runs.using: node20
+          cache: 'npm'
+      - run: npm ci
+      - run: npm test
+      # Rebuild and fail if the committed dist/ differs from a fresh build.
+      - run: npm run check-dist

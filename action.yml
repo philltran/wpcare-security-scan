@@ -1,0 +1,41 @@
+name: 'WPCare Security Scan'
+description: >-
+  Off-platform WordPress security scanner. Enumerates the checked-out site's code
+  on disk, matches it against the free Wordfence Intelligence vulnerability feed,
+  and upserts a deduped per-site GitHub issue (one per site) while failing the run
+  on alert-worthy Findings.
+author: 'philltran'
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  mode:
+    description: 'Scan mode. This release ships "vuln" (Vulnerability Scan); "drift" and "both" are later phases.'
+    required: false
+    default: 'vuln'
+  github-token:
+    description: 'Token used to upsert the deduped per-site security issue. Needs issues:write. Pass ${{ secrets.GITHUB_TOKEN }}.'
+    required: true
+  site-path:
+    description: 'Path to the checked-out site repo root for non-standard layouts. Defaults to GITHUB_WORKSPACE.'
+    required: false
+    default: ''
+  wpscan-token:
+    description: 'Optional WPScan API token for cross-reference (not used yet; reserved for a later slice).'
+    required: false
+    default: ''
+  fail-on:
+    description: 'Severity threshold for the failing-status gate (reserved; this slice fails on any alert-worthy Finding).'
+    required: false
+    default: 'low'
+
+outputs:
+  finding-count:
+    description: 'Total number of Findings emitted by the scan.'
+  alert-count:
+    description: 'Number of alert-worthy Findings (cve / abandoned / embedded).'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.mjs'

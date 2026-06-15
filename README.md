@@ -5,8 +5,11 @@ GitHub Action** that each site repo calls from a thin ~15-line workflow. It surf
 latent security holes the normal update cycle misses, without running anything on the site
 (Pantheon-friendly, no paid plugin).
 
-> **Status (2026-06-14): design captured, not yet implemented.** This repo currently holds
-> only the design docs. The build is sliced from the PRD via the issue pipeline (below).
+> **Status (2026-06-15): walking skeleton shipped (issue #2).** The Vulnerability Scan
+> tracer bullet runs end-to-end — enumerate top-level plugins → match the Wordfence feed →
+> one Known CVE Finding → deduped per-site GitHub issue + failing gate. Later slices thicken
+> each layer (deep/embedded enumeration, Abandoned plugins, Drift Detection). The build is
+> sliced from the PRD via the issue pipeline (below).
 
 ## What it does
 
@@ -60,6 +63,26 @@ grill (done) → make-prd (done: #1) → make-issues (NEXT) → triage → ship-
 vertical issues that cite `#1` as `## Parent`. Natural first slice: the Vulnerability Scan
 walking skeleton (inventory enumerator → Wordfence match → one Finding → deduped issue);
 Drift Detection is a later phase.
+
+## Building The Action
+
+This is a **JavaScript GitHub Action** (`runs.using: node20`). It runs the **committed
+bundle**, not `node_modules` — the runner does not `npm install`. After any change under
+`src/`, rebuild and commit the bundle:
+
+```
+npm install          # toolkit deps + bundler (one-time / on dep change)
+npm test             # node:test suite over the pure spine + fixtures
+npm run build        # @vercel/ncc -> committed dist/index.mjs (action.yml's main)
+npm run check-dist   # rebuild + git diff --exit-code dist (guards bundle drift)
+```
+
+- Toolkit: `@actions/core`, `@actions/github` (Octokit), `@actions/http-client` (feed).
+  Bundler: `@vercel/ncc`. Runtime: Node 20 on the runner.
+- `dist/` is committed and must stay in sync with `src/`; `check-dist` catches a stale
+  bundle. Source is ESM (`.mjs`), so the bundle is `dist/index.mjs`.
+- **Versioning:** semver. Consumers pin the moving major tag (`@v0` pre-1.0 in the
+  example workflow). Pre-1.0, the input/output contract in `action.yml` may still shift.
 
 ## Prior art to port (not import)
 

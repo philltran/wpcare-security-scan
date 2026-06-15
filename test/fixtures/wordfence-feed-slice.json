@@ -1,0 +1,28 @@
+{
+  "CVE-2020-35489": {
+    "id": "CVE-2020-35489",
+    "title": "Contact Form 7 < 5.3.2 - Unrestricted File Upload",
+    "software": [
+      {
+        "type": "plugin",
+        "slug": "contact-form-7",
+        "affected_versions": {
+          "* - 5.3.1": {
+            "from_version": "*",
+            "from_inclusive": true,
+            "to_version": "5.3.2",
+            "to_inclusive": false
+          }
+        }
+      }
+    ],
+    "cvss": {
+      "score": 9.8,
+      "rating": "critical"
+    },
+    "references": [
+      "https://www.wordfence.com/threat-intel/vulnerabilities/id/contact-form-7"
+    ],
+    "cve": "CVE-2020-35489"
+  }
+}

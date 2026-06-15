@@ -1,0 +1,22 @@
+{
+  "name": "wpcare-security-scan",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Off-platform WordPress security scanner, distributed as a reusable GitHub Action.",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "scripts": {
+    "test": "node --test",
+    "build": "ncc build src/index.mjs -o dist --source-map",
+    "check-dist": "npm run build && git diff --exit-code dist"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@actions/core": "^3.0.1",
+    "@actions/github": "^9.1.1",
+    "@actions/http-client": "^4.0.1"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.44.0"
+  }
+}
