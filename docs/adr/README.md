@@ -9,3 +9,4 @@
 - [0007 — Render the full report and detect outdated-but-no-CVE as report-only](0007-report-only-outdated-and-full-report.md)
 - [0008 — The `fail-on` severity gate, `@v0` pinning, and the per-site invocation contract](0008-fail-on-threshold-and-per-site-invocation.md)
 - [0009 — The Drift Baseline contract, the live-state snapshot shape, and the drift differ](0009-drift-baseline-contract-and-differ.md)
+- [0010 — The drift collector edge: Terminus auth, user-scoped least privilege, the critical-options allow-list, and PR-based re-bless](0010-drift-collector-terminus-least-privilege-and-rebless.md)

@@ -44,8 +44,13 @@ _Avoid_: "outdated" (an outdated plugin can still be updated).
 
 **Baseline**:
 The committed `.security/baseline.json` snapshot of expected live state that Drift
-Detection diffs against. Re-blessed deliberately via the workflow's
-`update-baseline` dispatch when a change is intentional.
+Detection diffs against. Its `criticalOptions` is a curated allow-list; the seeded
+default watches five privilege-escalation / hijack vectors — `default_role`,
+`users_can_register`, `siteurl`, `home`, `admin_email` (ADR-0010). Re-blessing is a
+deliberate, occasional human act, **not** a per-deploy or per-run step: when an
+*intentional* change would otherwise keep firing drift, the `update-baseline` dispatch
+opens a **PR** carrying the regenerated Baseline (diff in the body), and merging it is
+the re-bless.
 _Avoid_: "snapshot" (ambiguous), "config".
 
 **The Action**:
@@ -108,7 +113,12 @@ Action on a schedule / PR / dispatch. The only per-site footprint.
 
 ## Deferred to the PRD / implementation
 
-- Exact contents of the per-site critical-options allow-list (Drift mode).
 - GitHub issue label name that feeds `triage`/`ship-issues`.
-- Pantheon machine-token least-privilege scoping for Terminus.
 - Optional later layers: SMTP/Slack delivery, a cross-site fleet roll-up dashboard.
+- Platform-enforced read-only collector via a site-side signed REST endpoint
+  (mu-plugin) — shelved; breaks "nothing runs on the site" (ADR-0010).
+
+_Resolved (ADR-0010):_ the critical-options allow-list now has a seeded default, and
+Pantheon machine-token least privilege is achieved by scoping the **user** (a dedicated
+shared Team-Member service account in an org of only in-scope sites) since the token
+itself cannot be scoped.
