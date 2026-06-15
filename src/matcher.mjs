@@ -35,7 +35,7 @@ function verParts(v) {
     .map((p) => parseInt(p, 10));
 }
 
-function compareVersions(a, b) {
+export function compareVersions(a, b) {
   const pa = verParts(a);
   const pb = verParts(b);
   const len = Math.max(pa.length, pb.length);

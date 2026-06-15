@@ -36945,6 +36945,77 @@ function abandonedFinding(item, response) {
   };
 }
 
+;// CONCATENATED MODULE: ./src/outdated.mjs
+// Report-only outdated detector — PURE decision module.
+//
+//   outdatedFinding(item, wporgResponse) -> Finding | null
+//
+// A plugin whose installed version trails the latest version published on
+// wordpress.org — but which carries no known CVE and is not closed/removed — is a
+// *report-only* `outdated` Finding. It belongs in the full report so a maintainer has
+// the complete picture, but it must NEVER trip the failing workflow status: a plugin
+// that is merely behind is not a security alert, and treating it as one is crying wolf
+// (PRD user stories 23/24, CONTEXT.md "Abandoned plugin" — outdated *can* still be
+// updated, unlike abandoned). Its remediation therefore points at *update* (the
+// `wordpress-maintenance-updates` / `wordpress-update-flow` domain), not removal.
+//
+// The "latest available version" signal is REUSED from the same wordpress.org
+// plugin_information response the Abandoned detector already fetches (src/wporg.mjs):
+// a live plugin object carries a `version` field (the latest on wp.org). No new data
+// source — the orchestrator folds this verdict into the existing per-slug wp.org loop.
+//
+// This module is the PURE half: given the *recorded* { statusCode, body } response it
+// decides the verdict, so it is pinned by fixtures with no network. Boundaries:
+//   - non-plugin (core/theme/dropin)            => null (plugin_information is plugin-specific)
+//   - closed/removed (the Abandoned signal)     => null (owned by src/abandoned.mjs)
+//   - missing installed version / latest version => null (nothing to compare; fail safe)
+//   - installed >= latest                        => null (already current or ahead)
+//
+// Finding shape (the v1 contract; report-only, so no fixed_in/cve/url — there is no CVE
+// to point at, and `latest` carries the update target):
+//   { type:'outdated', severity, slug, version, kind, location, latest, remediation }
+
+
+
+
+// The latest version wordpress.org publishes for a live plugin: its top-level `version`
+// field. A non-string / empty value means the latest is unknown.
+function latestVersion(response) {
+  const body = response && typeof response === 'object' ? response.body : null;
+  if (!body || typeof body !== 'object') return null;
+  const v = body.version;
+  return typeof v === 'string' && v.trim() !== '' ? v : null;
+}
+
+function outdatedFinding(item, response) {
+  if (!item || item.kind !== 'plugin') return null;
+  if (!item.version) return null;
+
+  // Closed/removed is the Abandoned detector's verdict, not ours — never tell a
+  // maintainer to "update" a plugin that has no update channel.
+  if (isAbandonedResponse(response)) return null;
+
+  const latest = latestVersion(response);
+  if (!latest) return null;
+
+  // Affected only when strictly behind the latest. At or ahead => current, no Finding.
+  if (compareVersions(item.version, latest) >= 0) return null;
+
+  return {
+    type: 'outdated',
+    severity: 'none',
+    slug: item.slug,
+    version: item.version,
+    kind: item.kind,
+    location: item.path,
+    latest,
+    remediation:
+      `Update ${item.slug} from ${item.version} to ${latest} (the latest on `
+      + 'wordpress.org). Report-only: no known CVE affects the installed version, so '
+      + 'this does not fail the scan — route it into the normal update flow.',
+  };
+}
+
 ;// CONCATENATED MODULE: ./src/wpscan.mjs
 // WPScan cross-reference (issue #7).
 //
@@ -37140,6 +37211,8 @@ function normalizeWpscanResponse(rawResponse) {
 // new/worsened subset; see src/differ.mjs). The block is a single HTML comment so it
 // never renders to a human, mirroring the dedup marker's hidden-comment idiom.
 
+
+
 // The dedup label. The exact name was flagged "deferred to implementation" in
 // CONTEXT.md; this is the first concrete choice and stays stable across runs.
 const ISSUE_LABEL = 'security-scan';
@@ -37151,8 +37224,12 @@ function markerFor(repoSlug) {
   return `<!-- wpcare-security-scan:${repoSlug || 'unknown'} -->`;
 }
 
+// The title headlines the ALERT-worthy count only — report-only Findings (outdated)
+// never inflate it. Tolerant of being handed the full Finding list or a pre-filtered
+// alert-worthy list: it filters either way, so the headline is always the alert count.
 function renderIssueTitle(findings) {
-  const n = Array.isArray(findings) ? findings.length : 0;
+  const list = Array.isArray(findings) ? findings : [];
+  const n = list.filter(isAlertWorthy).length;
   const noun = n === 1 ? 'Finding' : 'Findings';
   return `Security Scan: ${n} alert-worthy ${noun}`;
 }
@@ -37167,6 +37244,7 @@ function renderFinding(f) {
   ];
   if (f.cve) lines.push(`- **CVE:** ${f.cve}`);
   if (f.fixed_in) lines.push(`- **Fixed in:** ${f.fixed_in}`);
+  if (f.latest) lines.push(`- **Latest available:** ${f.latest}`);
   if (f.url) lines.push(`- **Reference:** ${f.url}`);
   lines.push(`- **Remediation:** ${f.remediation}`);
   return lines.join('\n');
@@ -37197,22 +37275,51 @@ function renderState(findings) {
   return `${STATE_OPEN}${payload}${STATE_CLOSE}`;
 }
 
+// Render the full report. The body shows EVERY detected Finding so a maintainer has the
+// complete picture (PRD user story 23): alert-worthy Findings first, then a clearly
+// labeled report-only section for the rest (outdated-but-no-CVE; user story 24). Only
+// the alert-worthy Findings are persisted in the hidden state block and counted by the
+// title — a report-only Finding can therefore never be diffed back into an alert or trip
+// the failing status. Tolerant of being handed the full list OR a pre-filtered
+// alert-worthy list (a report-only section simply renders empty in the latter case), so
+// existing callers keep working.
 function renderIssueBody(repoSlug, findings) {
   const list = Array.isArray(findings) ? findings : [];
+  const alertWorthy = list.filter(isAlertWorthy);
+  const reportOnly = list.filter((f) => !isAlertWorthy(f));
+
   const parts = [
     markerFor(repoSlug),
     '',
     'Automated WordPress security scan results. This issue is updated in place on '
       + 'each run; do not open a duplicate.',
     '',
-    ...list.map(renderFinding),
   ];
-  if (!list.length) {
+
+  if (alertWorthy.length) {
+    parts.push('## Alert-worthy Findings', '', ...alertWorthy.map(renderFinding));
+  } else {
     parts.push('No alert-worthy Findings in the latest scan.');
   }
-  // The persisted state block always trails the body, even when empty, so the next
-  // run reads an unambiguous prior set (an empty array, not "no state at all").
-  parts.push('', renderState(list));
+
+  // The full-report section: report-only Findings (outdated-but-no-CVE) are listed for
+  // completeness but explicitly flagged as non-alerting so they never read as a fire.
+  if (reportOnly.length) {
+    parts.push(
+      '',
+      '## Report-only (not alerting)',
+      '',
+      'The items below are detected for completeness — they are **report-only** and do '
+        + 'not fail the scan (no known CVE affects the installed version).',
+      '',
+      ...reportOnly.map(renderFinding),
+    );
+  }
+
+  // The persisted state block always trails the body, even when empty, so the next run
+  // reads an unambiguous prior set (an empty array, not "no state at all"). ONLY the
+  // alert-worthy Findings are persisted, so the differ never re-alerts a report-only one.
+  parts.push('', renderState(alertWorthy));
   return parts.join('\n');
 }
 
@@ -37329,6 +37436,7 @@ function diffFindings(priorFindings, currentFindings) {
 
 
 
+
 // Bound the per-slug wordpress.org fan-out: a full-inventory site can carry 30+
 // plugins, and we will not query them all at once (socket/rate pressure on wp.org).
 const WPORG_CONCURRENCY = 5;
@@ -37385,12 +37493,17 @@ async function crossReferenceWpscan(inventory, fetchWpscanData) {
   return datasets.reduce((acc, ds) => mergeDatasets(acc, ds), {});
 }
 
-// Detect Abandoned (closed/removed) plugins. For each *top-level* plugin slug (an
-// embedded plugin is handled by the matcher's embedded detector; core/themes/drop-ins
-// are not wordpress.org plugins), query the injected impure edge and let the pure
-// decision (abandonedFinding) shape the verdict. The lookup is fail-safe: a rejected
-// or garbage response yields no Finding, so a flaky lookup never fires a false alert.
-async function detectAbandoned(inventory, fetchPluginInfo) {
+// Query wordpress.org per *top-level* plugin slug (an embedded plugin is handled by the
+// matcher's embedded detector; core/themes/drop-ins are not wordpress.org plugins) and
+// derive BOTH wp.org-sourced verdicts from the single recorded response, reusing it:
+//   - Abandoned (closed/removed): the plugin has no update channel  — ALERT-worthy.
+//   - Outdated (installed < the wp.org latest, no CVE, not abandoned): merely behind —
+//     REPORT-ONLY (never trips the gate; the scanner must not cry wolf).
+// `cveSlugs` is the set of slugs already carrying a Known CVE Finding, so an outdated
+// verdict is suppressed for them — the PRD's notion is "outdated-but-no-CVE" and a CVE
+// alert already owns that slug. The lookup is fail-safe: a rejected or garbage response
+// yields no Finding, so a flaky lookup never fires a false alert.
+async function detectWporgFindings(inventory, fetchPluginInfo, cveSlugs) {
   if (typeof fetchPluginInfo !== 'function') return [];
 
   // Unique top-level plugin slugs only — never query the same slug twice.
@@ -37417,8 +37530,17 @@ async function detectAbandoned(inventory, fetchPluginInfo) {
         // A transport failure is not evidence of abandonment — fail safe.
         response = null;
       }
-      const finding = abandonedFinding(item, response);
-      if (finding) findings.push(finding);
+
+      const abandoned = abandonedFinding(item, response);
+      if (abandoned) {
+        findings.push(abandoned);
+        continue; // abandoned owns the slug; never also report it as merely outdated.
+      }
+
+      // Report-only outdated-but-no-CVE: skip slugs that already carry a CVE alert.
+      if (cveSlugs.has(item.slug)) continue;
+      const outdated = outdatedFinding(item, response);
+      if (outdated) findings.push(outdated);
     }
   }
 
@@ -37452,14 +37574,24 @@ async function runVulnScan({
 
   const findings = matchVulnerabilities(inventory, dataset);
 
-  // Fold in Abandoned (closed/removed) Findings from the wordpress.org lookup.
-  const abandoned = await detectAbandoned(inventory, fetchPluginInfo);
-  for (const f of abandoned) findings.push(f);
+  // Fold in the wordpress.org-sourced Findings from one per-slug lookup: Abandoned
+  // (closed/removed; alert-worthy) and report-only Outdated (installed < latest, no
+  // CVE; never trips the gate). Outdated is suppressed for any slug already carrying a
+  // Known CVE Finding — the PRD's notion is "outdated-but-no-CVE."
+  const cveSlugs = new Set(
+    findings.filter((f) => f.type === 'cve').map((f) => f.slug),
+  );
+  const wporgFindings = await detectWporgFindings(inventory, fetchPluginInfo, cveSlugs);
+  for (const f of wporgFindings) findings.push(f);
 
   const alertWorthy = findings.filter(isAlertWorthy);
 
-  const title = renderIssueTitle(alertWorthy);
-  const body = renderIssueBody(repoSlug, alertWorthy);
+  // The rendered report shows EVERY detected Finding (including report-only outdated) so
+  // a maintainer has the complete picture; the reporter persists + counts only the
+  // alert-worthy subset, so report-only items never trip the gate. The differ below
+  // still runs over `alertWorthy` alone.
+  const title = renderIssueTitle(findings);
+  const body = renderIssueBody(repoSlug, findings);
 
   // Upsert in place. The returned `priorBody` is the existing issue's body from before
   // this run (null on the first run, when no issue exists yet) — the thin impure read

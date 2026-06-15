@@ -5,8 +5,24 @@ GitHub Action** that each site repo calls from a thin ~15-line workflow. It surf
 latent security holes the normal update cycle misses, without running anything on the site
 (Pantheon-friendly, no paid plugin).
 
-> **Status (2026-06-15): optional WPScan cross-reference (issue #7, v0.6.0).**
-> The Vulnerability Scan now takes an **optional WPScan cross-reference** that deepens
+> **Status (2026-06-15): full report + report-only outdated (issue #8, v0.7.0).**
+> The scanner now renders the **full report of everything detected**, not just the
+> alert-worthy subset: the deduped issue carries an **Alert-worthy Findings** section and
+> a clearly-labeled **Report-only (not alerting)** section. New **outdated-but-no-CVE**
+> detection (`src/outdated.mjs`, pure) compares each top-level plugin's installed version
+> against the **latest published on wordpress.org** — reusing the *same* wp.org response
+> the Abandoned detector already fetches (no new data source) — and raises a **report-only
+> `outdated` Finding** whose remediation points at **update** (the
+> `wordpress-maintenance-updates` / `wordpress-update-flow` domain). Report-only by
+> construction: `outdated` is excluded from the alert-worthy set, is suppressed for any
+> slug already abandoned or carrying a CVE, and is **never persisted in the differ's state
+> block nor counted in the title**, so it can never trip the failing workflow status — the
+> scanner does not cry wolf over a plugin that is merely behind. Every Finding carries
+> slug, version, location, and a type-appropriate remediation (CVE → update;
+> abandoned/embedded → remove; outdated → update, report-only). See
+> [ADR-0007](docs/adr/0007-report-only-outdated-and-full-report.md). Earlier slice:
+> optional WPScan cross-reference (issue #7, v0.6.0).
+> The Vulnerability Scan also takes an **optional WPScan cross-reference** that deepens
 > coverage when a `WPSCAN_API_TOKEN` is supplied — and stays a **zero-secret default** when
 > it is not. With no token, behavior is unchanged and the scan needs no credentials; with a
 > token, per-plugin WPScan data is folded into the Wordfence dataset and matched through the
@@ -87,6 +103,7 @@ runs off-platform so a site compromise can't disable it.
   - 0004 — enumerate the filesystem deeply, not WordPress's plugin list
   - 0005 — persist prior Findings in the deduped issue body (alert only on new/worsened)
   - 0006 — merge the optional WPScan cross-reference into the Wordfence dataset
+  - 0007 — render the full report and detect outdated-but-no-CVE as report-only
 - **PRD:** [philltran/wpcare-security-scan#1](https://github.com/philltran/wpcare-security-scan/issues/1)
   — the parent document the build is sliced from.
 

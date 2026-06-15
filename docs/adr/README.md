@@ -6,3 +6,4 @@
 - [0004 — Enumerate the filesystem deeply, not WordPress's plugin list](0004-deep-embedded-enumeration.md)
 - [0005 — Persist prior Findings in the deduped issue body to alert only on new/worsened](0005-persist-prior-findings-in-issue-body.md)
 - [0006 — Merge the optional WPScan cross-reference into the Wordfence dataset](0006-wpscan-cross-reference-merge.md)
+- [0007 — Render the full report and detect outdated-but-no-CVE as report-only](0007-report-only-outdated-and-full-report.md)

@@ -18,6 +18,8 @@
 // new/worsened subset; see src/differ.mjs). The block is a single HTML comment so it
 // never renders to a human, mirroring the dedup marker's hidden-comment idiom.
 
+import { isAlertWorthy } from './matcher.mjs';
+
 // The dedup label. The exact name was flagged "deferred to implementation" in
 // CONTEXT.md; this is the first concrete choice and stays stable across runs.
 export const ISSUE_LABEL = 'security-scan';
@@ -29,8 +31,12 @@ export function markerFor(repoSlug) {
   return `<!-- wpcare-security-scan:${repoSlug || 'unknown'} -->`;
 }
 
+// The title headlines the ALERT-worthy count only — report-only Findings (outdated)
+// never inflate it. Tolerant of being handed the full Finding list or a pre-filtered
+// alert-worthy list: it filters either way, so the headline is always the alert count.
 export function renderIssueTitle(findings) {
-  const n = Array.isArray(findings) ? findings.length : 0;
+  const list = Array.isArray(findings) ? findings : [];
+  const n = list.filter(isAlertWorthy).length;
   const noun = n === 1 ? 'Finding' : 'Findings';
   return `Security Scan: ${n} alert-worthy ${noun}`;
 }
@@ -45,6 +51,7 @@ function renderFinding(f) {
   ];
   if (f.cve) lines.push(`- **CVE:** ${f.cve}`);
   if (f.fixed_in) lines.push(`- **Fixed in:** ${f.fixed_in}`);
+  if (f.latest) lines.push(`- **Latest available:** ${f.latest}`);
   if (f.url) lines.push(`- **Reference:** ${f.url}`);
   lines.push(`- **Remediation:** ${f.remediation}`);
   return lines.join('\n');
@@ -75,22 +82,51 @@ function renderState(findings) {
   return `${STATE_OPEN}${payload}${STATE_CLOSE}`;
 }
 
+// Render the full report. The body shows EVERY detected Finding so a maintainer has the
+// complete picture (PRD user story 23): alert-worthy Findings first, then a clearly
+// labeled report-only section for the rest (outdated-but-no-CVE; user story 24). Only
+// the alert-worthy Findings are persisted in the hidden state block and counted by the
+// title — a report-only Finding can therefore never be diffed back into an alert or trip
+// the failing status. Tolerant of being handed the full list OR a pre-filtered
+// alert-worthy list (a report-only section simply renders empty in the latter case), so
+// existing callers keep working.
 export function renderIssueBody(repoSlug, findings) {
   const list = Array.isArray(findings) ? findings : [];
+  const alertWorthy = list.filter(isAlertWorthy);
+  const reportOnly = list.filter((f) => !isAlertWorthy(f));
+
   const parts = [
     markerFor(repoSlug),
     '',
     'Automated WordPress security scan results. This issue is updated in place on '
       + 'each run; do not open a duplicate.',
     '',
-    ...list.map(renderFinding),
   ];
-  if (!list.length) {
+
+  if (alertWorthy.length) {
+    parts.push('## Alert-worthy Findings', '', ...alertWorthy.map(renderFinding));
+  } else {
     parts.push('No alert-worthy Findings in the latest scan.');
   }
-  // The persisted state block always trails the body, even when empty, so the next
-  // run reads an unambiguous prior set (an empty array, not "no state at all").
-  parts.push('', renderState(list));
+
+  // The full-report section: report-only Findings (outdated-but-no-CVE) are listed for
+  // completeness but explicitly flagged as non-alerting so they never read as a fire.
+  if (reportOnly.length) {
+    parts.push(
+      '',
+      '## Report-only (not alerting)',
+      '',
+      'The items below are detected for completeness — they are **report-only** and do '
+        + 'not fail the scan (no known CVE affects the installed version).',
+      '',
+      ...reportOnly.map(renderFinding),
+    );
+  }
+
+  // The persisted state block always trails the body, even when empty, so the next run
+  // reads an unambiguous prior set (an empty array, not "no state at all"). ONLY the
+  // alert-worthy Findings are persisted, so the differ never re-alerts a report-only one.
+  parts.push('', renderState(alertWorthy));
   return parts.join('\n');
 }
 
