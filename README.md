@@ -50,7 +50,7 @@ runs off-platform so a site compromise can't disable it.
 
 - [`CONTEXT.md`](./CONTEXT.md) — domain language (Vulnerability Scan, Drift Detection,
   Finding, Embedded plugin, Abandoned plugin, Baseline, The Action, Per-site workflow).
-- [`docs/adr/`](./docs/adr/) — the architectural decisions:
+- [`docs/adr/`](./docs/adr/README.md) — the architectural decisions:
   - 0001 — scan off-platform from a GitHub Action, not an on-site plugin
   - 0002 — ship as a reusable Action in its own repo
   - 0003 — use the free Wordfence Intelligence feed as the primary source
@@ -73,7 +73,7 @@ Drift Detection is a later phase.
 
 ## Building The Action
 
-This is a **JavaScript GitHub Action** (`runs.using: node20`). It runs the **committed
+This is a **JavaScript GitHub Action** (`runs.using: node24`). It runs the **committed
 bundle**, not `node_modules` — the runner does not `npm install`. After any change under
 `src/`, rebuild and commit the bundle:
 
@@ -85,7 +85,7 @@ npm run check-dist   # rebuild + git diff --exit-code dist (guards bundle drift)
 ```
 
 - Toolkit: `@actions/core`, `@actions/github` (Octokit), `@actions/http-client` (feed).
-  Bundler: `@vercel/ncc`. Runtime: Node 20 on the runner.
+  Bundler: `@vercel/ncc`. Runtime: Node 24 on the runner.
 - `dist/` is committed and must stay in sync with `src/`; `check-dist` catches a stale
   bundle. Source is ESM (`.mjs`), so the bundle is `dist/index.mjs`.
 - **Versioning:** semver. Consumers pin the moving major tag (`@v0` pre-1.0 in the

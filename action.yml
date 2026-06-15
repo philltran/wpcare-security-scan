@@ -37,5 +37,5 @@ outputs:
     description: 'Number of alert-worthy Findings (cve / abandoned / embedded).'
 
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.mjs'

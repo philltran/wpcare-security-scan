@@ -52,7 +52,7 @@ _Avoid_: "snapshot" (ambiguous), "config".
 The versioned, reusable GitHub Action — in its own repo — that contains all scan
 logic. Site repos never copy the logic; they reference it. Explicitly **not** a
 WordPress plugin and nothing runs on the site. Implemented as a **JavaScript action**
-(`runs.using: node20`) that ships a committed `dist/index.mjs` bundle (built from
+(`runs.using: node24`) that ships a committed `dist/index.mjs` bundle (built from
 `src/` with `@vercel/ncc` via `npm run build`); the runner executes the bundle, not
 `node_modules`. See the README "Building The Action".
 _Avoid_: "the script", "the plugin".
