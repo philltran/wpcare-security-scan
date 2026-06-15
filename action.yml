@@ -30,7 +30,13 @@ inputs:
     required: false
     default: ''
   fail-on:
-    description: 'Severity threshold for the failing-status gate (reserved; this slice fails on any alert-worthy Finding).'
+    description: >-
+      Minimum severity that fails the workflow status. One of: low, medium, high, critical.
+      The deduped issue is always upserted with every Finding regardless; this only gates the
+      failing status, which fires when a new/worsened alert-worthy Finding meets-or-exceeds the
+      threshold. An unscored CVE (severity unknown) always fails. Defaults to "low" (every
+      new/worsened alert-worthy Finding fails the run). Raise it to file findings without
+      failing the run for less-severe ones.
     required: false
     default: 'low'
 

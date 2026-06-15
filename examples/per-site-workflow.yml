@@ -1,5 +1,16 @@
 # Per-site workflow — drop this into each WordPress site repo at
-# .github/workflows/security-scan.yml. It is the only per-site footprint.
+# .github/workflows/security-scan.yml. It is the only per-site footprint: all scan
+# logic lives in the versioned Action, so a fix ships fleet-wide without editing this.
+#
+# Triggers (PRD #1): a weekly schedule (a fresh CVE against frozen code is caught
+# within 7 days), pull_request (shift-left — catch vulnerable/bundled code before it
+# merges), and workflow_dispatch (on-demand).
+#
+# SECURITY: this uses `pull_request`, NOT `pull_request_target`. A fork PR's head is
+# attacker-controlled; running it with write scope + secrets is the classic foot-gun.
+# `pull_request` runs in the PR's own (read-only, secret-less) context — keep it that
+# way (issue #14). The scan needs no secrets beyond the repo's own GITHUB_TOKEN, so it
+# stays entirely inside this repo's secret boundary — no cross-repo credentials.
 name: Security Scan
 
 on:
@@ -8,6 +19,8 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege: the Action reads the checked-out code and upserts one deduped
+# security issue. Nothing else is needed.
 permissions:
   contents: read   # read the checked-out code on disk
   issues: write    # upsert the deduped per-site security issue
@@ -17,7 +30,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Pin to the moving major tag so a fix propagates fleet-wide. Pre-1.0 this is
+      # @v0 (the contract may still shift); upgrade deliberately when @v1 ships.
       - uses: philltran/wpcare-security-scan@v0
         with:
-          mode: vuln
+          mode: vuln                          # vuln is the only mode shipped today
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          fail-on: low                        # low | medium | high | critical
+          # site-path: wp                     # only for a non-standard docroot

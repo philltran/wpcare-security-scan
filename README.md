@@ -5,6 +5,21 @@ GitHub Action** that each site repo calls from a thin ~15-line workflow. It surf
 latent security holes the normal update cycle misses, without running anything on the site
 (Pantheon-friendly, no paid plugin).
 
+> **Status (2026-06-15): per-site invocation surface + working `fail-on` gate (issue #9, v0.8.0).**
+> The per-site workflow template, the Action's input contract, and version pinning are now
+> documented as the adoption surface (a WordPress site opts in with the ~15-line workflow
+> below). The previously-inert **`fail-on`** input is now load-bearing: it sets the **minimum
+> severity that fails the workflow status** (`low | medium | high | critical`) while the
+> deduped issue still files **every** Finding — so a fleet can ratchet the failing *status*
+> down (e.g. file a new medium CVE but only fail on high+) without ever changing what is
+> reported. An **unscored CVE always fails** (fail-loud; a security tool must not swallow a
+> vuln it cannot rank) and a typo'd threshold falls back to `low` (the gate is never silently
+> disarmed). The scan runs entirely inside the **calling repo's own secret boundary** — vuln
+> mode needs only `GITHUB_TOKEN`, no cross-repo credentials — and the per-site workflow uses
+> `pull_request` (shift-left), **never** `pull_request_target`. See
+> [ADR-0008](docs/adr/0008-fail-on-threshold-and-per-site-invocation.md). Earlier slice:
+> full report + report-only outdated (issue #8, v0.7.0).
+>
 > **Status (2026-06-15): full report + report-only outdated (issue #8, v0.7.0).**
 > The scanner now renders the **full report of everything detected**, not just the
 > alert-worthy subset: the deduped issue carries an **Alert-worthy Findings** section and
@@ -92,6 +107,72 @@ Regular updates gave false assurance; an attacker exploited the hole and disable
 plugin. This scanner reads files (not the active-plugin list), looks *inside* themes, and
 runs off-platform so a site compromise can't disable it.
 
+## Using The Action (per-site adoption)
+
+A WordPress site opts in by dropping one ~15-line workflow into its repo at
+`.github/workflows/security-scan.yml` — the **only** per-site footprint. All scan logic
+lives in this versioned Action, so a fix ships fleet-wide without editing every site.
+Copy [`examples/per-site-workflow.yml`](./examples/per-site-workflow.yml):
+
+```yaml
+name: Security Scan
+on:
+  schedule:
+    - cron: '17 6 * * 1'   # weekly, Monday 06:17 UTC
+  pull_request:            # shift-left: catch vulnerable/bundled code before it merges
+  workflow_dispatch:       # on-demand
+permissions:
+  contents: read           # read the checked-out code on disk
+  issues: write            # upsert the deduped per-site security issue
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: philltran/wpcare-security-scan@v0
+        with:
+          mode: vuln
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fail-on: low     # low | medium | high | critical
+```
+
+### Inputs
+
+| Input | Required | Default | Purpose |
+|-------|----------|---------|---------|
+| `mode` | no | `vuln` | Scan mode. Only `vuln` (Vulnerability Scan) ships today; `drift` / `both` are later phases. |
+| `github-token` | yes | — | Token to upsert the deduped per-site issue (needs `issues: write`). Pass `${{ secrets.GITHUB_TOKEN }}`. |
+| `fail-on` | no | `low` | Minimum severity that **fails the workflow status** (`low \| medium \| high \| critical`). The issue always files *every* Finding; this only gates the failing status. An unscored CVE always fails; an unknown value falls back to `low`. |
+| `site-path` | no | `$GITHUB_WORKSPACE` | Path override for a non-standard docroot (e.g. a johnpbloch `wp/` layout). Defaults to the checked-out repo root. |
+| `wpscan-token` | no | — | Optional WPScan API token (the calling repo's own secret) to cross-reference per-plugin WPScan data. Omit for the zero-secret default. Pass `${{ secrets.WPSCAN_API_TOKEN }}`. |
+
+Outputs: `finding-count`, `alert-count`, `new-count` (see [`action.yml`](./action.yml)).
+
+### Versioning & pinning
+
+Pin the **moving major tag** so a fix propagates fleet-wide without touching every site
+repo:
+
+- **Pre-1.0 (today): `@v0`.** This repo is pre-1.0; sites pin `…@v0`, which the
+  maintainer advances to the latest compatible release. The input/output contract in
+  `action.yml` may still shift before 1.0 — upgrades within `@v0` can change behavior, so
+  read the release notes.
+- **`@v1` (the PRD's steady state):** when 1.0 ships, sites move to `@v1` deliberately and
+  the contract is then stable within the major. The PRD's `@v1` language describes that
+  post-1.0 state; today the live tag is `@v0`.
+- A site that wants byte-for-byte reproducibility pins a **full release SHA** instead of a
+  moving tag, trading automatic fix-propagation for pinning.
+
+### Secret boundary
+
+The scan runs **entirely inside the calling repo's own secret boundary** — there are no
+cross-repo credentials. Vuln mode is **zero-secret**: it needs only the repo's own
+`GITHUB_TOKEN` (to upsert the issue). The optional `wpscan-token` is the *calling* repo's
+secret, masked in logs. The per-site workflow triggers on **`pull_request`** (so a vulnerable
+or bundled-plugin change is caught *before* it merges — shift-left) and deliberately **never**
+on `pull_request_target`: a fork PR's head is attacker-controlled and must not run with write
+scope and secrets in scope.
+
 ## Design docs (source of truth)
 
 - [`CONTEXT.md`](./CONTEXT.md) — domain language (Vulnerability Scan, Drift Detection,
@@ -104,6 +185,7 @@ runs off-platform so a site compromise can't disable it.
   - 0005 — persist prior Findings in the deduped issue body (alert only on new/worsened)
   - 0006 — merge the optional WPScan cross-reference into the Wordfence dataset
   - 0007 — render the full report and detect outdated-but-no-CVE as report-only
+  - 0008 — the `fail-on` severity gate, `@v0` pinning, and the per-site invocation contract
 - **PRD:** [philltran/wpcare-security-scan#1](https://github.com/philltran/wpcare-security-scan/issues/1)
   — the parent document the build is sliced from.
 

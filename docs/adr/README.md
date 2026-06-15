@@ -7,3 +7,4 @@
 - [0005 — Persist prior Findings in the deduped issue body to alert only on new/worsened](0005-persist-prior-findings-in-issue-body.md)
 - [0006 — Merge the optional WPScan cross-reference into the Wordfence dataset](0006-wpscan-cross-reference-merge.md)
 - [0007 — Render the full report and detect outdated-but-no-CVE as report-only](0007-report-only-outdated-and-full-report.md)
+- [0008 — The `fail-on` severity gate, `@v0` pinning, and the per-site invocation contract](0008-fail-on-threshold-and-per-site-invocation.md)
