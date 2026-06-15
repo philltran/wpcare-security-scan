@@ -5,6 +5,23 @@ GitHub Action** that each site repo calls from a thin ~15-line workflow. It surf
 latent security holes the normal update cycle misses, without running anything on the site
 (Pantheon-friendly, no paid plugin).
 
+> **Status (2026-06-15): Drift Baseline contract + drift differ — the pure half of mode 2 (issue #10, v0.9.0).**
+> Drift Detection's testable half lands: the committed **Baseline** shape
+> (`.security/baseline.json` — expected active plugins/themes, the full admin-account
+> set, and a curated **critical-options allow-list** with blessed values), the live-state
+> **snapshot** shape the upcoming Terminus collector (#11) will produce, and a **pure**
+> differ (`src/drift.mjs`, `detectDrift(snapshot, baseline) → Findings`). It raises drift
+> for an expected **security control turned off** (e.g. the SSO plugin deactivated), a
+> **new/unexpected administrator account** (post-compromise persistence), and a **changed
+> critical option** — and stays **silent when the snapshot matches a freshly-blessed
+> Baseline**. The Baseline lists *expected* state, not exhaustive state, so an extra active
+> plugin or an unwatched option never cries wolf. Drift Findings reuse the shared Finding
+> shape **additively** (new `type`s + optional `expected`/`actual`), so the same reporter
+> renders them and vuln mode is untouched — `mode=vuln` still ships, the **Terminus
+> collector + credential/allow-list scoping is the follow-up slice (#11)**. See
+> [ADR-0009](docs/adr/0009-drift-baseline-contract-and-differ.md). Earlier slice:
+> per-site invocation surface + `fail-on` gate (issue #9, v0.8.0).
+>
 > **Status (2026-06-15): per-site invocation surface + working `fail-on` gate (issue #9, v0.8.0).**
 > The per-site workflow template, the Action's input contract, and version pinning are now
 > documented as the adoption surface (a WordPress site opts in with the ~15-line workflow
@@ -186,6 +203,7 @@ scope and secrets in scope.
   - 0006 — merge the optional WPScan cross-reference into the Wordfence dataset
   - 0007 — render the full report and detect outdated-but-no-CVE as report-only
   - 0008 — the `fail-on` severity gate, `@v0` pinning, and the per-site invocation contract
+  - 0009 — the Drift Baseline contract, the live-state snapshot shape, and the drift differ
 - **PRD:** [philltran/wpcare-security-scan#1](https://github.com/philltran/wpcare-security-scan/issues/1)
   — the parent document the build is sliced from.
 

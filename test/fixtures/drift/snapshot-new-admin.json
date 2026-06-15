@@ -1,0 +1,20 @@
+{
+  "activePlugins": [
+    "wp-saml-auth",
+    "akismet",
+    "wordpress-seo"
+  ],
+  "activeThemes": [
+    "twentytwentyfour"
+  ],
+  "administrators": [
+    "alice",
+    "bob",
+    "evil-backdoor"
+  ],
+  "criticalOptions": {
+    "users_can_register": "0",
+    "default_role": "subscriber",
+    "siteurl": "https://example.com"
+  }
+}

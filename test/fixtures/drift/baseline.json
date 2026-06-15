@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "blessedAt": "2026-06-15T00:00:00Z",
+  "activePlugins": [
+    "wp-saml-auth",
+    "akismet",
+    "wordpress-seo"
+  ],
+  "activeThemes": [
+    "twentytwentyfour"
+  ],
+  "administrators": [
+    "alice",
+    "bob"
+  ],
+  "criticalOptions": {
+    "users_can_register": "0",
+    "default_role": "subscriber",
+    "siteurl": "https://example.com"
+  }
+}
