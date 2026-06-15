@@ -5,11 +5,15 @@ GitHub Action** that each site repo calls from a thin ~15-line workflow. It surf
 latent security holes the normal update cycle misses, without running anything on the site
 (Pantheon-friendly, no paid plugin).
 
-> **Status (2026-06-15): walking skeleton shipped (issue #2).** The Vulnerability Scan
-> tracer bullet runs end-to-end — enumerate top-level plugins → match the Wordfence feed →
-> one Known CVE Finding → deduped per-site GitHub issue + failing gate. Later slices thicken
-> each layer (deep/embedded enumeration, Abandoned plugins, Drift Detection). The build is
-> sliced from the PRD via the issue pipeline (below).
+> **Status (2026-06-15): deep + embedded enumeration shipped (issue #3, v0.2.0).** The
+> Vulnerability Scan now walks `wp-content` deeply — top-level plugins, mu-plugins, drop-ins,
+> all themes (active or not), and core — and recursively sniffs headers nested inside other
+> plugins/themes, so a plugin **bundled inside a theme** (the Slider Revolution blind spot) is
+> caught and flagged `embedded: true`. An Embedded plugin raises an alert-worthy Finding even
+> with no CVE; a false "embedded copy" is a triageable Finding, never a fatal error. The
+> earlier walking skeleton (issue #2) wired the end-to-end path — enumerate → match the
+> Wordfence feed → Findings → deduped per-site GitHub issue + failing gate. Later slices
+> thicken matching (range satisfaction, Abandoned plugins) and add Drift Detection.
 
 ## What it does
 

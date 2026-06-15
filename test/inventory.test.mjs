@@ -11,8 +11,9 @@ const SITE = join(here, 'fixtures', 'site');
 test('enumerates each top-level plugin as an Inventory item with slug and version', () => {
   const items = enumerateInventory(SITE);
 
-  const bySlug = new Map(items.map((i) => [i.slug, i]));
-  assert.equal(items.length, 2, 'finds both top-level plugins');
+  const topLevelPlugins = items.filter((i) => i.kind === 'plugin' && i.embedded === false);
+  const bySlug = new Map(topLevelPlugins.map((i) => [i.slug, i]));
+  assert.ok(topLevelPlugins.length >= 2, 'finds the top-level plugins');
 
   const cf7 = bySlug.get('contact-form-7');
   assert.ok(cf7, 'contact-form-7 enumerated');

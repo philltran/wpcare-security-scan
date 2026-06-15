@@ -20,7 +20,7 @@ function makeUpserter() {
   };
 }
 
-test('walking skeleton: fixture tree -> one CVE Finding, one upserted issue, failing gate', async () => {
+test('end-to-end: fixture tree -> a CVE Finding AND the embedded revslider Finding, one upserted issue, failing gate', async () => {
   const upserter = makeUpserter();
 
   const result = await runVulnScan({
@@ -30,33 +30,46 @@ test('walking skeleton: fixture tree -> one CVE Finding, one upserted issue, fai
     upsertIssue: upserter.upsertIssue,
   });
 
-  // exactly one Known CVE Finding
-  assert.equal(result.findings.length, 1);
-  assert.equal(result.findings[0].type, 'cve');
-  assert.equal(result.findings[0].slug, 'contact-form-7');
+  const byType = (t) => result.findings.filter((f) => f.type === t);
 
-  // a single deduped issue upsert happened
+  // the Known CVE against the top-level contact-form-7.
+  const cve = byType('cve');
+  assert.equal(cve.length, 1);
+  assert.equal(cve[0].slug, 'contact-form-7');
+
+  // the headline catch: the Slider Revolution bundled inside the theme, with no CVE.
+  const embedded = byType('embedded');
+  assert.ok(
+    embedded.some((f) => f.slug === 'revslider'),
+    'the embedded revslider is caught end-to-end',
+  );
+
+  // a single deduped issue upsert carrying the Findings.
   assert.equal(upserter.calls.length, 1);
   assert.equal(upserter.calls[0].repoSlug, 'acme/site');
-  assert.match(upserter.calls[0].title, /1/);
   assert.match(upserter.calls[0].body, /contact-form-7/);
+  assert.match(upserter.calls[0].body, /revslider/);
 
-  // alert-worthy => failing exit code
-  assert.equal(result.alertWorthy, 1);
+  // every alert-worthy Finding (CVE + embedded) trips the failing gate.
+  assert.ok(result.alertWorthy >= 2);
+  assert.equal(result.alertWorthy, result.findings.filter((f) => f.type !== 'outdated').length);
   assert.equal(result.exitCode, 1);
 });
 
-test('a clean site exits zero and still upserts (issue closed/cleared in later slice)', async () => {
+test('a site with no alert-worthy Findings exits zero and still upserts', async () => {
+  // Point at a tree with no plugins/themes/embedded code and an empty feed.
+  const cleanRoot = join(here, 'fixtures', 'empty-site');
   const upserter = makeUpserter();
 
   const result = await runVulnScan({
-    siteRoot: SITE,
+    siteRoot: cleanRoot,
     repoSlug: 'acme/site',
-    fetchFeed: async () => ({}), // empty feed => no matches
+    fetchFeed: async () => ({}), // empty feed => no CVE matches
     upsertIssue: upserter.upsertIssue,
   });
 
   assert.equal(result.findings.length, 0);
   assert.equal(result.alertWorthy, 0);
   assert.equal(result.exitCode, 0);
+  assert.equal(upserter.calls.length, 1);
 });

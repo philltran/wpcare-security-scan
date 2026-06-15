@@ -54,3 +54,26 @@ test('a CVE Finding is alert-worthy', () => {
   const [f] = matchVulnerabilities([cf7], DATASET);
   assert.equal(isAlertWorthy(f), true);
 });
+
+test('an Embedded plugin raises an Embedded-plugin Finding even with no matching CVE', () => {
+  const revslider = {
+    slug: 'revslider', kind: 'plugin', version: '4.6.0',
+    path: '/site/wp-content/themes/premium-theme/revslider', embedded: true,
+  };
+  // Empty dataset: there is no CVE record for this slug at all.
+  const findings = matchVulnerabilities([revslider], {});
+
+  assert.equal(findings.length, 1, 'the embedded plugin alone yields a Finding');
+  const f = findings[0];
+  assert.equal(f.type, 'embedded');
+  assert.equal(f.slug, 'revslider');
+  assert.equal(f.version, '4.6.0');
+  assert.equal(f.kind, 'plugin');
+  assert.equal(f.location, '/site/wp-content/themes/premium-theme/revslider');
+  assert.equal(isAlertWorthy(f), true);
+  assert.match(f.remediation, /remov/i, 'embedded code is removed, not updated');
+});
+
+test('a top-level (non-embedded) plugin with no CVE yields no Finding', () => {
+  assert.deepEqual(matchVulnerabilities([akismet], {}), []);
+});

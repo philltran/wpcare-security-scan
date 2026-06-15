@@ -64,11 +64,36 @@ function remediationFor(slug, fixedIn) {
     : `Update ${slug} to a patched version.`;
 }
 
+// An Embedded plugin (one detected nested inside another plugin or theme) is an
+// alert-worthy Finding in its own right, independent of any CVE: it has no update
+// channel and the site owner cannot patch it, so its remediation is *removal*, never
+// *update* (ADR-0004, CONTEXT.md "Embedded plugin"). Emitted even when the slug has
+// no matching CVE record. A false "embedded copy" (a legitimately vendored library)
+// surfaces here as a triageable Finding a human resolves — it never aborts the run.
+function embeddedFinding(item) {
+  return {
+    type: 'embedded',
+    severity: 'medium',
+    slug: item.slug,
+    version: item.version,
+    kind: item.kind,
+    location: item.path,
+    remediation:
+      `Remove the embedded ${item.kind} "${item.slug}" (bundled at ${item.path}); `
+      + 'it has no update channel and cannot be patched in place. '
+      + 'If this is a legitimately vendored copy, triage and dismiss this Finding.',
+  };
+}
+
 export function matchVulnerabilities(inventory, normalizedDataset) {
   const dataset = normalizedDataset || {};
   const findings = [];
 
   for (const item of Array.isArray(inventory) ? inventory : []) {
+    if (item && item.embedded === true) {
+      findings.push(embeddedFinding(item));
+    }
+
     const records = dataset[item.slug];
     if (!Array.isArray(records)) continue;
 
