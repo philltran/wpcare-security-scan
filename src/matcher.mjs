@@ -103,10 +103,19 @@ function remediationFor(slug, fixedIn) {
 // *update* (ADR-0004, CONTEXT.md "Embedded plugin"). Emitted even when the slug has
 // no matching CVE record. A false "embedded copy" (a legitimately vendored library)
 // surfaces here as a triageable Finding a human resolves — it never aborts the run.
-function embeddedFinding(item) {
+//
+// The default severity is `medium`: a bundled-but-clean copy. But a bundled copy that
+// *also* satisfies a known CVE is materially worse, so the severity escalates to the
+// worst matching CVE's CVSS band when that band outranks the default (issue #13). It
+// only ever escalates — a low/unknown-severity CVE never makes a bundled copy *less*
+// urgent than a clean one, so the severity floors at `medium`. Reuses the shared
+// CVSS->severity mapping and severity ranking, not a parallel scheme.
+const EMBEDDED_DEFAULT_SEVERITY = 'medium';
+
+function embeddedFinding(item, affectedCves) {
   return {
     type: 'embedded',
-    severity: 'medium',
+    severity: embeddedSeverity(affectedCves),
     slug: item.slug,
     version: item.version,
     kind: item.kind,
@@ -118,21 +127,33 @@ function embeddedFinding(item) {
   };
 }
 
+// Escalate to the worst matching CVE's severity, but never below the `medium` default.
+function embeddedSeverity(affectedCves) {
+  let severity = EMBEDDED_DEFAULT_SEVERITY;
+  for (const vuln of affectedCves) {
+    const cveSeverity = severityFromCvss(vuln.cvss);
+    if (severityRank(cveSeverity) > severityRank(severity)) severity = cveSeverity;
+  }
+  return severity;
+}
+
 export function matchVulnerabilities(inventory, normalizedDataset) {
   const dataset = normalizedDataset || {};
   const findings = [];
 
   for (const item of Array.isArray(inventory) ? inventory : []) {
+    const records = dataset[item.slug];
+    const affectedCves = (Array.isArray(records) ? records : []).filter((vuln) =>
+      isAffected(item.version, vuln.fixed_in),
+    );
+
+    // The embedded Finding's severity is context-aware: it escalates to the worst CVE
+    // this bundled copy also satisfies, so it must be built after the CVEs are known.
     if (item && item.embedded === true) {
-      findings.push(embeddedFinding(item));
+      findings.push(embeddedFinding(item, affectedCves));
     }
 
-    const records = dataset[item.slug];
-    if (!Array.isArray(records)) continue;
-
-    for (const vuln of records) {
-      if (!isAffected(item.version, vuln.fixed_in)) continue;
-
+    for (const vuln of affectedCves) {
       findings.push({
         type: 'cve',
         severity: severityFromCvss(vuln.cvss),

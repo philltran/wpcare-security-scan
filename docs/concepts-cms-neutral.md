@@ -217,7 +217,10 @@ A package is affected when its installed version is **strictly below** the advis
 tolerant of loose, non-strict-semver version strings. Severity maps from the advisory
 CVSS onto the Finding severity vocabulary (a missing score is `unknown`, not `none`).
 Also emits an `embedded` Finding for every `embedded: true` inventory item independent
-of any CVE (no update channel → remediation is *removal*).
+of any CVE (no update channel → remediation is *removal*). Its severity is
+context-aware: `medium` for a bundled-but-clean copy, escalated to the worst CVSS band
+of any CVE the bundled slug+version also satisfies (never *de*-escalated below the
+`medium` floor — a vulnerable bundled copy is never less urgent than a clean one).
 
 **Fully CMS-neutral** — it operates only on the two normalized shapes above and the
 severity vocabulary. A Drupal sibling reuses it **unchanged**. (It also exports the
