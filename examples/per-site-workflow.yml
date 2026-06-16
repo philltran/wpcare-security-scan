@@ -29,7 +29,7 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5   # v5 runs on Node 24; v4 trips the Node 20 deprecation warning
       # Pin to the moving major tag so a fix propagates fleet-wide. Pre-1.0 this is
       # @v0 (the contract may still shift); upgrade deliberately when @v1 ships.
       - uses: philltran/wpcare-security-scan@v0

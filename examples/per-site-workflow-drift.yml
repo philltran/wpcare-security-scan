@@ -37,7 +37,7 @@ jobs:
       contents: read   # read the committed .security/baseline.json
       issues: write    # upsert the deduped per-site security issue
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5   # v5 runs on Node 24; v4 trips the Node 20 deprecation warning
       - uses: shivammathur/setup-php@v2   # WP-CLI over Terminus needs PHP on the runner
         with:
           php-version: '8.3'
@@ -64,7 +64,7 @@ jobs:
       contents: write        # commit the regenerated Baseline onto a branch
       pull-requests: write   # open the re-bless PR
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5   # v5 runs on Node 24; v4 trips the Node 20 deprecation warning
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
