@@ -222,6 +222,9 @@ scope and secrets in scope.
 
 - [`CONTEXT.md`](./CONTEXT.md) — domain language (Vulnerability Scan, Drift Detection,
   Finding, Embedded plugin, Abandoned plugin, Baseline, The Action, Per-site workflow).
+- [`docs/concepts-cms-neutral.md`](./docs/concepts-cms-neutral.md) — the concepts and
+  deep-module contracts described **CMS-neutrally** (input/output shapes), noting where
+  a Drupal sibling swaps its vuln backend without changing the module shapes.
 - [`docs/adr/`](./docs/adr/README.md) — the architectural decisions:
   - 0001 — scan off-platform from a GitHub Action, not an on-site plugin
   - 0002 — ship as a reusable Action in its own repo
