@@ -216,7 +216,13 @@ cross-repo credentials. Vuln mode is **zero-secret**: it needs only the repo's o
 secret, masked in logs. The per-site workflow triggers on **`pull_request`** (so a vulnerable
 or bundled-plugin change is caught *before* it merges — shift-left) and deliberately **never**
 on `pull_request_target`: a fork PR's head is attacker-controlled and must not run with write
-scope and secrets in scope.
+scope and secrets in scope. The corollary rule is **never execute PR-supplied code with the
+base-repo token** — even as later slices add behavior that checks out, reads, or runs PR
+content, that content must not run under an elevated/base-repo token. This prohibition is
+**CI-enforced**, not just documented: a pure, zero-dependency guard
+([`src/workflow-safety.mjs`](./src/workflow-safety.mjs)) scans every shipped
+`examples/*.yml` and `npm test` (run in CI) fails if any introduces `pull_request_target`.
+See [ADR-0012](docs/adr/0012-per-site-workflow-pull-request-not-pull-request-target.md).
 
 ## Design docs (source of truth)
 

@@ -11,3 +11,4 @@
 - [0009 — The Drift Baseline contract, the live-state snapshot shape, and the drift differ](0009-drift-baseline-contract-and-differ.md)
 - [0010 — The drift collector edge: Terminus auth, user-scoped least privilege, the critical-options allow-list, and PR-based re-bless](0010-drift-collector-terminus-least-privilege-and-rebless.md)
 - [0011 — The Embedded-plugin Finding's severity is context-aware, escalate-only](0011-embedded-finding-context-aware-severity.md)
+- [0012 — The per-site workflow uses `pull_request`, never `pull_request_target`](0012-per-site-workflow-pull-request-not-pull-request-target.md)
