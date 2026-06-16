@@ -1,0 +1,82 @@
+# Per-site workflow for Drift Detection (Pantheon sites) — drop into a Pantheon site
+# repo at .github/workflows/security-scan-drift.yml. This is the only per-site
+# footprint; all logic lives in the versioned Action.
+#
+# Drift Detection reads live security-critical state via Terminus (mode: drift) or
+# alongside the Vulnerability Scan (mode: both) and diffs it against the committed
+# .security/baseline.json. NON-Pantheon repos run the vuln-only workflow instead.
+#
+# Two jobs:
+#   - scan      — scheduled / PR / on-demand drift (or both) scan; needs issues:write.
+#   - rebless   — a workflow_dispatch with update-baseline=true; re-blesses the Baseline
+#                 by opening a PR (contents:write + pull-requests:write, dispatch only).
+#
+# SECRET: the Pantheon machine token is an ORG-LEVEL secret scoped to in-scope repos —
+# PANTHEON_WPCARE_MACHINE_TOKEN — owned by a shared Team-Member service account confined
+# to a dedicated org of in-scope sites (ADR-0010). Never a .env file, never a runner env.
+name: Security Scan (Drift)
+
+on:
+  schedule:
+    - cron: '37 6 * * 1'   # weekly, Monday 06:37 UTC
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      update-baseline:
+        description: 'Re-bless the drift Baseline from live state (opens a PR).'
+        type: boolean
+        default: false
+
+jobs:
+  # The normal scan: read live state, diff the Baseline, upsert the deduped issue.
+  scan:
+    # Skip the scan when this dispatch is a re-bless (the rebless job handles that).
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.update-baseline) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read   # read the committed .security/baseline.json
+      issues: write    # upsert the deduped per-site security issue
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2   # WP-CLI over Terminus needs PHP on the runner
+        with:
+          php-version: '8.3'
+      - name: Install Terminus
+        run: |
+          curl -L https://github.com/pantheon-systems/terminus/releases/latest/download/terminus.phar -o /usr/local/bin/terminus
+          chmod +x /usr/local/bin/terminus
+      - uses: philltran/wpcare-security-scan@v0
+        with:
+          mode: both                          # vuln + drift in one deduped issue
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fail-on: low                        # low | medium | high | critical
+          pantheon-site: my-site-machine-name # explicit; never derived from the repo name
+          pantheon-env: live                  # the authoritative env
+          pantheon-machine-token: ${{ secrets.PANTHEON_WPCARE_MACHINE_TOKEN }}
+
+  # The re-bless: regenerate the Baseline from live state and open a PR carrying the
+  # diff. Merging the PR is the deliberate re-bless. Elevated permissions are scoped
+  # to THIS dispatch-only job — the scheduled scan above keeps issues:write alone.
+  rebless:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.update-baseline }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # commit the regenerated Baseline onto a branch
+      pull-requests: write   # open the re-bless PR
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+      - name: Install Terminus
+        run: |
+          curl -L https://github.com/pantheon-systems/terminus/releases/latest/download/terminus.phar -o /usr/local/bin/terminus
+          chmod +x /usr/local/bin/terminus
+      - uses: philltran/wpcare-security-scan@v0
+        with:
+          mode: drift
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pantheon-site: my-site-machine-name
+          pantheon-env: live
+          pantheon-machine-token: ${{ secrets.PANTHEON_WPCARE_MACHINE_TOKEN }}
+          update-baseline: true

@@ -29102,6 +29102,8 @@ __nccwpck_require__.d(__webpack_exports__, {
   e: () => (/* binding */ run)
 });
 
+;// CONCATENATED MODULE: external "node:path"
+const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
 ;// CONCATENATED MODULE: external "os"
 const external_os_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("os");
 ;// CONCATENATED MODULE: ./node_modules/@actions/core/lib/utils.js
@@ -36367,8 +36369,6 @@ function getOctokit(token, options, ...additionalPlugins) {
 //# sourceMappingURL=github.js.map
 ;// CONCATENATED MODULE: external "node:fs"
 const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
-;// CONCATENATED MODULE: external "node:path"
-const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
 ;// CONCATENATED MODULE: ./src/inventory.mjs
 // Inventory enumerator — pure, deep module.
 //
@@ -37190,6 +37190,214 @@ function normalizeWpscanResponse(rawResponse) {
   return bySlug;
 }
 
+;// CONCATENATED MODULE: ./src/drift.mjs
+// Drift differ — PURE, deep module. The testable half of Drift Detection (mode 2).
+//
+//   detectDrift(snapshot, baseline) -> [ Finding ]
+//   isDriftFinding(finding)          -> boolean
+//
+// Drift Detection diffs *live security-critical state* read off the running site
+// against a committed, deliberately-blessed Baseline (.security/baseline.json,
+// CONTEXT.md "Baseline"). The motivating incident: an attacker disabled the site's
+// SSO plugin — drift is what catches that. This module is the PURE decision: given a
+// live-state snapshot and the Baseline, it emits a drift Finding for an expected
+// security control being turned off, a new/unexpected administrator account, and a
+// changed critical option — and emits NOTHING when the snapshot matches a
+// freshly-blessed Baseline (PRD user stories 25–29).
+//
+// The IMPURE half — the Terminus/WP-CLI reads that PRODUCE the snapshot, plus the
+// credential and allow-list scoping — is the follow-up slice (#11). It is kept thin
+// and is NOT unit-tested. This module defines the snapshot/Baseline SHAPE that #11's
+// collector must fill, so it has a contract to populate.
+//
+// ── The Baseline contract (committed .security/baseline.json) ────────────────────
+//   {
+//     "version": 1,                       // contract version, for future migration
+//     "blessedAt": "<ISO-8601>",          // when this Baseline was last re-blessed
+//     "activePlugins":  [ "<slug>", ... ],// plugin slugs expected to stay ACTIVE
+//     "activeThemes":   [ "<slug>", ... ],// theme slugs expected to stay ACTIVE
+//     "administrators": [ "<login>", ...],// the full expected admin-account set
+//     "criticalOptions": { "<name>": "<expected value>", ... } // curated allow-list
+//   }
+// The Baseline lists EXPECTED state, not exhaustive state: it watches for an expected
+// control going AWAY and for a watched option CHANGING — not for additions (an extra
+// active plugin is a maintenance action, an unwatched option is a routine edit). This
+// is what keeps drift from crying wolf (user story 27).
+//
+// ── The live-state snapshot shape (what #11's collector produces) ────────────────
+//   {
+//     "activePlugins":  [ "<slug>", ... ],// from `wp plugin list --status=active`
+//     "activeThemes":   [ "<slug>", ... ],// the active theme(s)
+//     "administrators": [ "<login>", ...],// from `wp user list --role=administrator`
+//     "criticalOptions": { "<name>": "<actual value>", ... } // `wp option get <name>`
+//   }
+// Values are compared as strings (WP-CLI emits option values as text), and lists are
+// compared as SETS — order-insensitive, since a live read won't preserve Baseline
+// ordering.
+//
+// ── How drift expresses itself as a Finding ──────────────────────────────────────
+// Drift reuses the shared v1 Finding shape additively (mirroring how `outdated` added
+// an optional `latest`, ADR-0007), so the SAME reporter renders it and no vuln-mode
+// consumer changes:
+//   { type, severity, slug, kind, location, expected?, actual?, remediation }
+// New `type` values: 'security-control-disabled' | 'unexpected-admin' | 'changed-option'.
+// The optional `expected`/`actual` strings carry the before/after for a changed option
+// (and the active/inactive verdict for a disabled control). For an account or an option
+// there is no plugin slug, so the account login / option name rides the `slug` slot and
+// `location` records the live source (the admin set / the options table). Drift Findings
+// are alert-worthy in drift mode via `isDriftFinding` here — they are deliberately NOT
+// added to the vuln matcher's `ALERT_WORTHY` set, which is the vuln-mode contract.
+
+const DRIFT_TYPES = new Set([
+  'security-control-disabled',
+  'unexpected-admin',
+  'changed-option',
+]);
+
+function isDriftFinding(finding) {
+  return Boolean(finding) && DRIFT_TYPES.has(finding.type);
+}
+
+// Severity ordering for surfacing the worst drift first, aligned with the matcher's
+// vocabulary. A rogue administrator (post-compromise persistence) is the most urgent;
+// a disabled security control is next; a changed critical option is a notch below.
+const drift_SEVERITY_RANK = {
+  critical: 5, high: 4, medium: 3, low: 2, none: 1, unknown: 0,
+};
+
+function asArray(v) {
+  return Array.isArray(v) ? v : [];
+}
+
+function asStringSet(list) {
+  return new Set(asArray(list).map((s) => String(s)));
+}
+
+// A disabled-control Finding for an expected plugin/theme that is no longer active.
+function disabledControlFinding(slug, kind) {
+  return {
+    type: 'security-control-disabled',
+    severity: 'high',
+    slug,
+    kind,
+    location: `active_${kind}s`,
+    expected: 'active',
+    actual: 'inactive',
+    remediation:
+      `Re-activate the ${kind} "${slug}" — the Baseline expects it active but the live `
+      + 'site has it disabled. If the deactivation was intentional, re-bless the Baseline '
+      + 'so it stops alerting.',
+  };
+}
+
+// An unexpected-admin Finding for an account present live but absent from the Baseline.
+function unexpectedAdminFinding(login) {
+  return {
+    type: 'unexpected-admin',
+    severity: 'critical',
+    slug: login,
+    kind: 'account',
+    location: 'administrators',
+    remediation:
+      `Investigate the administrator account "${login}" — it is not in the Baseline's `
+      + 'expected admin set. A new administrator can be post-compromise persistence: '
+      + 'confirm it is legitimate, then either remove it or re-bless the Baseline.',
+  };
+}
+
+// A changed-option Finding for a watched critical option whose live value drifted.
+function changedOptionFinding(name, expected, actual) {
+  return {
+    type: 'changed-option',
+    severity: 'medium',
+    slug: name,
+    kind: 'option',
+    location: 'options',
+    expected,
+    actual,
+    remediation:
+      `Review the critical option "${name}": the Baseline expects "${expected}" but the `
+      + `live value is "${actual}". If the change is intended, re-bless the Baseline; `
+      + 'otherwise restore the expected value.',
+  };
+}
+
+function detectDrift(snapshot, baseline) {
+  if (!snapshot || typeof snapshot !== 'object') return [];
+  if (!baseline || typeof baseline !== 'object') return [];
+
+  const findings = [];
+
+  // 1. Expected active plugins/themes that are no longer active — a disabled control.
+  const livePlugins = asStringSet(snapshot.activePlugins);
+  for (const slug of asArray(baseline.activePlugins)) {
+    if (!livePlugins.has(String(slug))) {
+      findings.push(disabledControlFinding(String(slug), 'plugin'));
+    }
+  }
+  const liveThemes = asStringSet(snapshot.activeThemes);
+  for (const slug of asArray(baseline.activeThemes)) {
+    if (!liveThemes.has(String(slug))) {
+      findings.push(disabledControlFinding(String(slug), 'theme'));
+    }
+  }
+
+  // 2. Administrator accounts present live but not in the expected set — a rogue admin.
+  const expectedAdmins = asStringSet(baseline.administrators);
+  for (const login of asArray(snapshot.administrators)) {
+    if (!expectedAdmins.has(String(login))) {
+      findings.push(unexpectedAdminFinding(String(login)));
+    }
+  }
+
+  // 3. Watched critical options whose live value differs from the blessed value. Only
+  // the allow-listed options are diffed (the Baseline's criticalOptions keys), so a
+  // routine edit to an unwatched option never registers as drift (user story 27).
+  const allowList =
+    baseline.criticalOptions && typeof baseline.criticalOptions === 'object'
+      ? baseline.criticalOptions
+      : {};
+  const liveOptions =
+    snapshot.criticalOptions && typeof snapshot.criticalOptions === 'object'
+      ? snapshot.criticalOptions
+      : {};
+  for (const name of Object.keys(allowList)) {
+    const expected = String(allowList[name]);
+    // A watched option missing live reads as an empty live value (the option was
+    // deleted) — still a drift from the blessed value.
+    const actual = name in liveOptions ? String(liveOptions[name]) : '';
+    if (expected !== actual) {
+      findings.push(changedOptionFinding(name, expected, actual));
+    }
+  }
+
+  // Surface the worst first — a stable, most-severe-first sort so a rogue admin leads
+  // and equal-severity drift keeps detection order (matching the vuln matcher's idiom).
+  findings.sort((a, b) => (drift_SEVERITY_RANK[b.severity] ?? 0) - (drift_SEVERITY_RANK[a.severity] ?? 0));
+
+  return findings;
+}
+
+;// CONCATENATED MODULE: ./src/finding.mjs
+// Shared Finding predicate — the union of the two mode-specific alert-worthy sets.
+//
+// Mode 1 (Vulnerability Scan) alert-worthy types live in src/matcher.mjs (cve /
+// abandoned / embedded); mode 2 (Drift Detection) alert-worthy types live in
+// src/drift.mjs (security-control-disabled / unexpected-admin / changed-option). The
+// reporter renders, persists, and counts Findings from EITHER mode, so it needs one
+// predicate covering both — without widening the vuln matcher's own ALERT_WORTHY set
+// (that stays the vuln-mode contract) or the drift differ's isDriftFinding.
+
+
+
+
+// A Finding fires an alert if it is a vuln alert-worthy type OR a drift type. Used by
+// the reporter (title count, the persisted state block) so a drift Finding dedups
+// across runs exactly like a vuln Finding — alert only on new/worsened.
+function isAlertWorthyFinding(finding) {
+  return isAlertWorthy(finding) || isDriftFinding(finding);
+}
+
 ;// CONCATENATED MODULE: ./src/report.mjs
 // Reporter — pure rendering + issue-matching helpers.
 //
@@ -37229,7 +37437,7 @@ function markerFor(repoSlug) {
 // alert-worthy list: it filters either way, so the headline is always the alert count.
 function renderIssueTitle(findings) {
   const list = Array.isArray(findings) ? findings : [];
-  const n = list.filter(isAlertWorthy).length;
+  const n = list.filter(isAlertWorthyFinding).length;
   const noun = n === 1 ? 'Finding' : 'Findings';
   return `Security Scan: ${n} alert-worthy ${noun}`;
 }
@@ -37285,8 +37493,8 @@ function renderState(findings) {
 // existing callers keep working.
 function renderIssueBody(repoSlug, findings) {
   const list = Array.isArray(findings) ? findings : [];
-  const alertWorthy = list.filter(isAlertWorthy);
-  const reportOnly = list.filter((f) => !isAlertWorthy(f));
+  const alertWorthy = list.filter(isAlertWorthyFinding);
+  const reportOnly = list.filter((f) => !isAlertWorthyFinding(f));
 
   const parts = [
     markerFor(repoSlug),
@@ -37410,6 +37618,79 @@ function diffFindings(priorFindings, currentFindings) {
   return subset;
 }
 
+;// CONCATENATED MODULE: ./src/gate.mjs
+// The `fail-on` severity gate — PURE, shared. Resolves a `fail-on` input to a numeric
+// threshold and decides whether a Finding meets it. Mirrors the contract scan.mjs
+// established for the Vulnerability Scan (ADR-0008) so the Drift Detection path gates
+// identically: the gate governs ONLY the failing workflow status, never the report;
+// `low` is the fail-safe default; an unscored/`unknown`-severity Finding always meets
+// any threshold (fail loud, never swallow); and an unrecognized token falls back to
+// `low` so a typo never silently disarms the gate.
+
+
+
+const DEFAULT_FAIL_ON = 'low';
+
+function failOnRank(failOn) {
+  const token = String(failOn ?? '').trim().toLowerCase() || DEFAULT_FAIL_ON;
+  const rank = severityRank(token);
+  // severityRank returns 0 for `unknown` AND for any unrecognized token. Only the
+  // literal `unknown` legitimately ranks 0; any other unrecognized token falls back to
+  // the low default so a typo never disables the gate.
+  if (rank === 0 && token !== 'unknown') return severityRank(DEFAULT_FAIL_ON);
+  return rank;
+}
+
+function meetsThreshold(finding, thresholdRank) {
+  if (!finding) return false;
+  // An unscored Finding (severity 'unknown', rank 0) always trips any gate.
+  if (finding.severity === 'unknown') return true;
+  return severityRank(finding.severity) >= thresholdRank;
+}
+
+;// CONCATENATED MODULE: ./src/report-gate.mjs
+// Shared report + gate tail — PURE spine shared by every scan mode.
+//
+//   finalizeFindings({ repoSlug, findings, failOn, upsertIssue }) -> { ...counts, exitCode }
+//
+// Given the complete current Finding list (from the Vulnerability Scan, Drift
+// Detection, or BOTH combined), this renders the deduped per-site issue, upserts it in
+// place, recovers the prior persisted Findings, diffs to the new/worsened subset, and
+// applies the fail-on gate. It is the single place the "alert only on new/worsened"
+// contract (ADR-0005) and the fail-on gate (ADR-0008) are applied, so combining vuln +
+// drift Findings into one issue is just concatenating the lists and finalizing once —
+// no second upsert, no clobbered state block.
+//
+// The deduped issue ALWAYS carries every current Finding (the report is complete); the
+// gate governs only the failing workflow status, and only on the new/worsened subset.
+
+
+
+
+
+
+async function finalizeFindings({ repoSlug, findings, failOn, upsertIssue }) {
+  const list = Array.isArray(findings) ? findings : [];
+  const alertWorthy = list.filter(isAlertWorthyFinding);
+
+  const title = renderIssueTitle(list);
+  const body = renderIssueBody(repoSlug, list);
+  const upsert = (await upsertIssue({ repoSlug, title, body })) || {};
+
+  const prior = parsePersistedFindings(upsert.priorBody);
+  const newOrWorsened = diffFindings(prior, alertWorthy);
+
+  const threshold = failOnRank(failOn);
+  const gating = newOrWorsened.filter((f) => meetsThreshold(f, threshold));
+
+  return {
+    findings: list,
+    alertWorthy: alertWorthy.length,
+    newOrWorsened: newOrWorsened.length,
+    exitCode: gating.length > 0 ? 1 : 0,
+  };
+}
+
 ;// CONCATENATED MODULE: ./src/scan.mjs
 // Vulnerability Scan orchestrator — the pure spine that wires the module seams:
 //
@@ -37436,42 +37717,12 @@ function diffFindings(priorFindings, currentFindings) {
 
 
 
-
-// The `fail-on` severity threshold (issue #9). It governs ONLY the failing workflow
-// status: the deduped issue is always upserted with every current Finding regardless,
-// but the run fails iff at least one NEW or WORSENED alert-worthy Finding meets-or-
-// exceeds this severity. The per-site workflow sets it to ratchet the noise of the
-// failing status down for a fleet without ever changing what is reported.
-//
-// `low` is the default — it gates on every scored band low..critical, preserving the
-// pre-#9 contract (every new/worsened alert-worthy Finding failed the run). An
-// unrecognized / empty value falls back to `low` rather than disabling the gate: a
-// security gate must never be silently disarmed by a typo. There is deliberately no
-// "off"/"none" sentinel that disables failure — a site that wants the issue-only
-// behavior raises the threshold above its Findings explicitly.
-const DEFAULT_FAIL_ON = 'low';
-
-// Resolve a `fail-on` input string to a numeric rank using the matcher's existing
-// severity scale. An unknown token resolves to the low rank (fail-safe default).
-function failOnRank(failOn) {
-  const token = String(failOn ?? '').trim().toLowerCase() || DEFAULT_FAIL_ON;
-  const rank = severityRank(token);
-  // severityRank returns 0 for an unrecognized token (it shares `unknown`'s rank).
-  // Only `unknown` itself legitimately ranks 0; any *other* unrecognized token must
-  // fall back to the low default so a typo never disables the gate.
-  if (rank === 0 && token !== 'unknown') return severityRank(DEFAULT_FAIL_ON);
-  return rank;
-}
-
-// Does a Finding's severity meet-or-exceed the threshold? An UNSCORED CVE (severity
-// 'unknown', rank 0 — a CVE the feed carries with no CVSS) is treated as always
-// meeting any threshold: a security tool must not silently swallow a vuln it cannot
-// rank. Every other band is a straight rank comparison.
-function meetsThreshold(finding, thresholdRank) {
-  if (!finding) return false;
-  if (finding.severity === 'unknown') return true;
-  return severityRank(finding.severity) >= thresholdRank;
-}
+// The `fail-on` severity threshold (issue #9) governs ONLY the failing workflow status
+// and is applied in the shared report+gate tail (src/report-gate.mjs, via src/gate.mjs):
+// the deduped issue is always upserted with every current Finding regardless, but the
+// run fails iff at least one NEW or WORSENED alert-worthy Finding meets-or-exceeds the
+// severity. `low` is the fail-safe default; an unrecognized value falls back to `low`
+// (never silently disarmed). See ADR-0008.
 
 // Bound the per-slug wordpress.org fan-out: a full-inventory site can carry 30+
 // plugins, and we will not query them all at once (socket/rate pressure on wp.org).
@@ -37589,14 +37840,16 @@ async function detectWporgFindings(inventory, fetchPluginInfo, cveSlugs) {
   return findings;
 }
 
-async function runVulnScan({
+// Produce the complete Vulnerability Scan Finding list (the PURE-spine half, with the
+// injected impure reads). Returned with the inventory so a caller can render/finalize —
+// and so `both` mode can MERGE these with drift Findings into one deduped issue before
+// finalizing once. The report shows EVERY detected Finding (including report-only
+// outdated); the finalize tail decides what is alert-worthy and what gates the status.
+async function produceVulnFindings({
   siteRoot,
-  repoSlug,
-  failOn,
   fetchFeed,
   fetchPluginInfo,
   fetchWpscanData,
-  upsertIssue,
 } = {}) {
   const inventory = enumerateInventory(siteRoot);
 
@@ -37621,40 +37874,346 @@ async function runVulnScan({
   const wporgFindings = await detectWporgFindings(inventory, fetchPluginInfo, cveSlugs);
   for (const f of wporgFindings) findings.push(f);
 
-  const alertWorthy = findings.filter(isAlertWorthy);
+  return { inventory, findings };
+}
 
-  // The rendered report shows EVERY detected Finding (including report-only outdated) so
-  // a maintainer has the complete picture; the reporter persists + counts only the
-  // alert-worthy subset, so report-only items never trip the gate. The differ below
-  // still runs over `alertWorthy` alone.
-  const title = renderIssueTitle(findings);
-  const body = renderIssueBody(repoSlug, findings);
+async function runVulnScan({
+  siteRoot,
+  repoSlug,
+  failOn,
+  fetchFeed,
+  fetchPluginInfo,
+  fetchWpscanData,
+  upsertIssue,
+} = {}) {
+  const { inventory, findings } = await produceVulnFindings({
+    siteRoot, fetchFeed, fetchPluginInfo, fetchWpscanData,
+  });
 
-  // Upsert in place. The returned `priorBody` is the existing issue's body from before
-  // this run (null on the first run, when no issue exists yet) — the thin impure read
-  // that feeds the pure diff.
-  const upsert = (await upsertIssue({ repoSlug, title, body })) || {};
+  // Render + upsert the deduped issue, diff to the new/worsened subset, apply the
+  // fail-on gate — the shared tail every mode runs (src/report-gate.mjs).
+  const finalized = await finalizeFindings({ repoSlug, findings, failOn, upsertIssue });
 
-  // Alert only on the new/worsened subset: recover the prior persisted Findings and
-  // diff. The failing-status gate fires on this subset alone, so an unchanged site
-  // (same Findings, none new or worsened) runs GREEN.
-  const prior = parsePersistedFindings(upsert.priorBody);
-  const newOrWorsened = diffFindings(prior, alertWorthy);
+  return { inventory, ...finalized };
+}
 
-  // The `fail-on` threshold further narrows the gate to the new/worsened Findings whose
-  // severity meets-or-exceeds it. The deduped issue above already carries EVERY current
-  // Finding (the report is complete regardless of fail-on); this only governs whether
-  // the workflow *status* fails. An unscored CVE always counts (fail-loud).
-  const threshold = failOnRank(failOn);
-  const gating = newOrWorsened.filter((f) => meetsThreshold(f, threshold));
+;// CONCATENATED MODULE: ./src/baseline.mjs
+// Baseline helpers — PURE module for the live Drift Detection edge (mode 2, #11).
+//
+// The committed .security/baseline.json captures the deliberately-blessed expected
+// live state the pure differ (src/drift.mjs) diffs against. This module owns the pure
+// decisions around that file:
+//
+//   loadBaseline(path)                          -> the parsed Baseline, or null (bootstrap)
+//   seedBaseline(snapshot, { blessedAt })       -> a fresh Baseline with the seeded allow-list
+//   buildBaselineFromSnapshot(snapshot, prior, opts) -> a re-blessed Baseline
+//   renderBaselineDiff(oldBaseline, newBaseline)-> the human-readable PR-body diff
+//
+// The IMPURE halves — reading live state (src/collector.mjs) and opening the re-bless
+// PR (src/rebless.mjs) — are kept thin and are NOT unit-tested. This module is where
+// the seeded allow-list (ADR-0010) and the "here is the drift you are about to bless
+// away" diff are pinned by tests.
+
+
+
+// The contract version of the committed Baseline shape (matches src/drift.mjs).
+const BASELINE_VERSION = 1;
+
+// The seeded critical-options allow-list (ADR-0010): the five genuine privilege-
+// escalation / hijack vectors, not config noise. wp_user_roles is OPT-IN (a noisy
+// serialized blob) and is therefore NOT seeded — an operator adds it to a Baseline's
+// criticalOptions by hand, and a re-bless then carries it over (see
+// buildBaselineFromSnapshot).
+const SEEDED_CRITICAL_OPTIONS = new Set([
+  'default_role',
+  'users_can_register',
+  'siteurl',
+  'home',
+  'admin_email',
+]);
+
+// Read and parse the committed Baseline. Three outcomes, deliberately distinct:
+//   - present + valid JSON object -> the Baseline,
+//   - absent (ENOENT)             -> null (bootstrap: no Baseline blessed yet),
+//   - present + unparseable       -> THROW (an operator error; never silently treat a
+//     corrupt Baseline as "no Baseline" and bless live state over it).
+function loadBaseline(path) {
+  let raw;
+  try {
+    raw = (0,external_node_fs_namespaceObject.readFileSync)(path, 'utf8');
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return null;
+    throw err;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`Malformed Baseline at ${path}: ${err.message}`, { cause: err });
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`Malformed Baseline at ${path}: expected a JSON object.`);
+  }
+  return parsed;
+}
+
+function asSlugArray(list) {
+  return Array.isArray(list) ? list.map((s) => String(s)) : [];
+}
+
+// Pick only the allow-listed option keys out of a live snapshot's options, in the
+// order the allow-list iterates, coercing every value to a string (WP-CLI emits
+// option values as text and the differ compares as strings).
+function pickOptions(liveOptions, allowKeys) {
+  const live = liveOptions && typeof liveOptions === 'object' ? liveOptions : {};
+  const out = {};
+  for (const key of allowKeys) {
+    if (key in live) out[key] = String(live[key]);
+  }
+  return out;
+}
+
+// Build a Baseline from a live snapshot, blessing the options named by `allowKeys`.
+function baselineFrom(snapshot, allowKeys, blessedAt) {
+  const snap = snapshot && typeof snapshot === 'object' ? snapshot : {};
+  return {
+    version: BASELINE_VERSION,
+    blessedAt: blessedAt || new Date().toISOString(),
+    activePlugins: asSlugArray(snap.activePlugins),
+    activeThemes: asSlugArray(snap.activeThemes),
+    administrators: asSlugArray(snap.administrators),
+    criticalOptions: pickOptions(snap.criticalOptions, allowKeys),
+  };
+}
+
+// Seed a brand-new Baseline (bootstrap) from live state: blesses exactly the five
+// seeded allow-list options (ADR-0010), never every option the live site carries.
+function seedBaseline(snapshot, { blessedAt } = {}) {
+  return baselineFrom(snapshot, [...SEEDED_CRITICAL_OPTIONS], blessedAt);
+}
+
+// Re-bless: regenerate a Baseline from current live state. When a prior Baseline
+// exists, its CURATED allow-list keys are preserved (so an operator's opt-in — e.g.
+// wp_user_roles — survives re-bless and an unwatched live option never sneaks in);
+// with no prior Baseline this is a bootstrap and falls back to the seeded allow-list.
+function buildBaselineFromSnapshot(snapshot, priorBaseline, { blessedAt } = {}) {
+  const priorOptions =
+    priorBaseline
+    && typeof priorBaseline.criticalOptions === 'object'
+    && priorBaseline.criticalOptions
+      ? Object.keys(priorBaseline.criticalOptions)
+      : null;
+  const allowKeys = priorOptions && priorOptions.length
+    ? priorOptions
+    : [...SEEDED_CRITICAL_OPTIONS];
+  return baselineFrom(snapshot, allowKeys, blessedAt);
+}
+
+function setDiff(before, after) {
+  const beforeSet = new Set(asSlugArray(before));
+  const afterSet = new Set(asSlugArray(after));
+  const removed = [...beforeSet].filter((x) => !afterSet.has(x));
+  const added = [...afterSet].filter((x) => !beforeSet.has(x));
+  return { removed, added };
+}
+
+function optionDiffLines(before, after) {
+  const b = before && typeof before === 'object' ? before : {};
+  const a = after && typeof after === 'object' ? after : {};
+  const keys = new Set([...Object.keys(b), ...Object.keys(a)]);
+  const lines = [];
+  for (const key of keys) {
+    const bv = key in b ? String(b[key]) : '(absent)';
+    const av = key in a ? String(a[key]) : '(absent)';
+    if (bv !== av) lines.push(`- option \`${key}\`: \`${bv}\` -> \`${av}\``);
+  }
+  return lines;
+}
+
+// Render the "here is the drift you are about to bless away" diff for the re-bless PR
+// body (ADR-0010). A bootstrap (no prior Baseline) renders an explicit note rather than
+// a diff. The diff is descriptive prose, not a machine format — a human reads it before
+// merging the PR that re-blesses the Baseline.
+function renderBaselineDiff(oldBaseline, newBaseline) {
+  if (!oldBaseline) {
+    return 'Bootstrap: no prior Baseline. This PR seeds the first '
+      + '`.security/baseline.json` from current live state.';
+  }
+
+  const lines = [];
+  const plugins = setDiff(oldBaseline.activePlugins, newBaseline.activePlugins);
+  for (const slug of plugins.removed) lines.push(`- expected plugin no longer blessed active: \`${slug}\``);
+  for (const slug of plugins.added) lines.push(`- newly blessed active plugin: \`${slug}\``);
+
+  const themes = setDiff(oldBaseline.activeThemes, newBaseline.activeThemes);
+  for (const slug of themes.removed) lines.push(`- expected theme no longer blessed active: \`${slug}\``);
+  for (const slug of themes.added) lines.push(`- newly blessed active theme: \`${slug}\``);
+
+  const admins = setDiff(oldBaseline.administrators, newBaseline.administrators);
+  for (const login of admins.removed) lines.push(`- administrator removed from the expected set: \`${login}\``);
+  for (const login of admins.added) lines.push(`- administrator added to the expected set: \`${login}\``);
+
+  lines.push(...optionDiffLines(oldBaseline.criticalOptions, newBaseline.criticalOptions));
+
+  if (!lines.length) {
+    return 'No change: the regenerated Baseline matches the committed one '
+      + '(re-blessing is a no-op).';
+  }
+  return ['The following blessed state changes when this PR merges:', '', ...lines].join('\n');
+}
+
+;// CONCATENATED MODULE: ./src/drift-scan.mjs
+// Drift Detection orchestrator — the PURE spine of mode 2, mirroring runVulnScan.
+//
+//   collect live snapshot (impure, injected) -> detectDrift vs the Baseline (pure)
+//     -> render + upsert the deduped issue (impure, injected) -> diff vs prior
+//     persisted Findings (pure) -> fail-on gate (pure)
+//
+// The impure edges — the Terminus collector that PRODUCES the snapshot
+// (src/collector.mjs) and the re-bless PR opener (src/rebless.mjs) — are injected, so
+// this orchestrator is exercised end-to-end offline. The thin entrypoint (index.mjs)
+// supplies the real implementations.
+//
+// Failure semantics (ADR-0010): the pure differ never throws and never fabricates
+// drift from a bad read, but the impure collector surfacing an error must make the run
+// RED, not a silent green — so a collector rejection propagates out of here loudly and
+// NO issue is upserted (we have no trustworthy snapshot to report). detectDrift over a
+// good-but-mismatched snapshot is the only source of Findings.
+//
+// The re-bless path (update-baseline=true) is a separate outcome: it regenerates the
+// Baseline from live state and opens a PR carrying it + the diff, and deliberately does
+// NOT upsert the alert issue — re-blessing is an operator action, not a scan.
+
+
+
+
+
+// Collect the live snapshot through the injected impure edge. A collector failure is
+// re-thrown with context so the run fails loudly (ADR-0010) rather than silently
+// scanning nothing; the pure differ is never handed a fabricated snapshot.
+async function collect(collectSnapshot) {
+  if (typeof collectSnapshot !== 'function') {
+    throw new Error('drift collector is not configured (no collectSnapshot edge).');
+  }
+  let snapshot;
+  try {
+    snapshot = await collectSnapshot();
+  } catch (err) {
+    throw new Error(
+      `drift collector failed to read live state: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+  if (!snapshot || typeof snapshot !== 'object') {
+    throw new Error('drift collector returned no usable snapshot.');
+  }
+  return snapshot;
+}
+
+// Produce the drift Finding list: read live state (loud failure on a bad read — never
+// a fabricated snapshot) and run the pure differ against the committed Baseline. With
+// NO Baseline (bootstrap before the first re-bless) the differ yields no Findings — a
+// missing Baseline is not itself drift. Exported so `both` mode can merge these with
+// the vuln Findings into one deduped issue and finalize once.
+async function produceDriftFindings({ baseline, collectSnapshot } = {}) {
+  const snapshot = await collect(collectSnapshot);
+  return detectDrift(snapshot, baseline);
+}
+
+// The re-bless outcome: regenerate the Baseline from current live state and open a PR
+// carrying it + the human-readable diff (ADR-0010). Never a blind direct write, and
+// never an alert-issue upsert.
+async function reBless({ collectSnapshot, baseline, openBaselinePr, blessedAt }) {
+  if (typeof openBaselinePr !== 'function') {
+    throw new Error('update-baseline requires an openBaselinePr edge.');
+  }
+  const snapshot = await collect(collectSnapshot);
+  const nextBaseline = buildBaselineFromSnapshot(snapshot, baseline, { blessedAt });
+  const diff = renderBaselineDiff(baseline, nextBaseline);
+  // Pretty-print + trailing newline so the committed file is diff-friendly.
+  const baselineJson = `${JSON.stringify(nextBaseline, null, 2)}\n`;
+
+  const pr = await openBaselinePr({ baseline: nextBaseline, baselineJson, diff });
+  return {
+    mode: 'update-baseline',
+    findings: [],
+    alertWorthy: 0,
+    newOrWorsened: 0,
+    exitCode: 0,
+    baseline: nextBaseline,
+    pr: pr || null,
+  };
+}
+
+async function runDriftScan({
+  repoSlug,
+  baseline,
+  failOn,
+  updateBaseline = false,
+  collectSnapshot,
+  upsertIssue,
+  openBaselinePr,
+  blessedAt,
+} = {}) {
+  // Re-bless is a distinct outcome that short-circuits the alert path entirely.
+  if (updateBaseline) {
+    return reBless({ collectSnapshot, baseline, openBaselinePr, blessedAt });
+  }
+
+  // Read live state + diff vs the Baseline (loud failure on a bad read — no issue
+  // upsert, no fabricated drift).
+  const findings = await produceDriftFindings({ baseline, collectSnapshot });
+
+  // Render + upsert the deduped issue, diff to new/worsened, apply the fail-on gate —
+  // the shared tail every mode runs (src/report-gate.mjs).
+  const finalized = await finalizeFindings({ repoSlug, findings, failOn, upsertIssue });
 
   return {
-    inventory,
-    findings,
-    alertWorthy: alertWorthy.length,
-    newOrWorsened: newOrWorsened.length,
-    exitCode: gating.length > 0 ? 1 : 0,
+    mode: 'drift',
+    ...finalized,
   };
+}
+
+;// CONCATENATED MODULE: ./src/combined.mjs
+// `mode: both` — run the Vulnerability Scan and Drift Detection together and report
+// their Findings in ONE deduped per-site issue (CONTEXT.md "one per site"). Combining
+// is just concatenating the two Finding lists and finalizing once through the shared
+// report+gate tail, so there is no second upsert and no clobbered state block.
+//
+// Order matters for failure semantics: the drift collector (the impure live read) runs
+// FIRST so a collector error fails the run loudly BEFORE any issue is upserted —
+// `both` must never file a half-done issue (vuln Findings only) when it could not read
+// live state. The pure differ still never fabricates drift from a bad read (ADR-0010).
+
+
+
+
+
+async function runCombinedScan({
+  siteRoot,
+  repoSlug,
+  baseline,
+  failOn,
+  fetchFeed,
+  fetchPluginInfo,
+  fetchWpscanData,
+  collectSnapshot,
+  upsertIssue,
+} = {}) {
+  // Drift first: a collector failure must abort before any upsert (fail loud).
+  const driftFindings = await produceDriftFindings({ baseline, collectSnapshot });
+
+  const { inventory, findings: vulnFindings } = await produceVulnFindings({
+    siteRoot, fetchFeed, fetchPluginInfo, fetchWpscanData,
+  });
+
+  // Merge both lists; vuln and drift Finding identities never collide (distinct
+  // `type`s), so the differ dedups each independently across runs.
+  const findings = [...vulnFindings, ...driftFindings];
+
+  const finalized = await finalizeFindings({ repoSlug, findings, failOn, upsertIssue });
+
+  return { mode: 'both', inventory, ...finalized };
 }
 
 ;// CONCATENATED MODULE: ./src/feed.mjs
@@ -37764,11 +38323,207 @@ function makeIssueUpserter(octokit, { owner, repo }) {
   };
 }
 
+;// CONCATENATED MODULE: external "node:child_process"
+const external_node_child_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
+// EXTERNAL MODULE: external "node:util"
+var external_node_util_ = __nccwpck_require__(7975);
+;// CONCATENATED MODULE: ./src/collector.mjs
+// Drift collector — the IMPURE edge of mode 2 (ADR-0010). Authenticates to Pantheon
+// with a machine token (a repo/org SECRET, never logged) and reads security-critical
+// live state via `terminus remote:wp` (WP-CLI over SSH) into the ADR-0009 snapshot
+// shape the pure differ consumes. Kept deliberately thin and READ-ONLY — only `plugin
+// list` / `theme list` / `user list` / `option get` — and NOT unit-tested; the pure
+// differ (src/drift.mjs) and orchestrator (src/drift-scan.mjs) are the tested seams.
+//
+// Least privilege is the USER's, not the token's (ADR-0010): the token belongs to a
+// shared Team-Member service account confined to a dedicated org of in-scope sites.
+// The token itself cannot be scoped; "read-only" is this module's enforced convention,
+// asserted by issuing only the four read verbs below.
+//
+// Untrusted input: `site` and `env` come from the per-site workflow `with:` block, not
+// the network, but they are still interpolated into a child command — so they are
+// passed as an argv array via execFile (never a shell string) and validated against a
+// conservative allow-list pattern before use. The token is passed as a CLI flag value
+// in the argv array (also never shell-interpolated) and is masked in logs by the
+// caller (core.setSecret).
+
+
+
+
+const execFileAsync = (0,external_node_util_.promisify)(external_node_child_process_namespaceObject.execFile);
+
+// Pantheon site machine names and env names are lowercase alphanumerics with hyphens
+// (and env can be a multidev name). A conservative allow-list forecloses argument /
+// command injection even though execFile already avoids the shell.
+const SAFE_NAME = /^[a-z0-9][a-z0-9-]{0,62}$/i;
+
+function assertSafe(label, value) {
+  if (typeof value !== 'string' || !SAFE_NAME.test(value)) {
+    throw new Error(`drift collector: invalid ${label} "${value}".`);
+  }
+  return value;
+}
+
+// Run a terminus subcommand as an argv array (no shell). Stdout is returned trimmed.
+async function terminus(args, { env } = {}) {
+  const { stdout } = await execFileAsync('terminus', args, {
+    env: { ...process.env, ...env },
+    maxBuffer: 16 * 1024 * 1024, // a full plugin list on a big site is comfortably under this
+  });
+  return stdout;
+}
+
+// Run a read-only WP-CLI verb on the site over SSH and parse its JSON output. The
+// `wpArgs` are fixed strings this module controls (the read verbs), never caller input
+// beyond the validated site/env.
+async function remoteWpJson(site, env, wpArgs) {
+  const out = await terminus(['remote:wp', `${site}.${env}`, '--', ...wpArgs, '--format=json']);
+  const trimmed = out.trim();
+  if (!trimmed) return [];
+  return JSON.parse(trimmed);
+}
+
+// Read a single option value as raw text (option values are compared as strings).
+async function remoteWpOption(site, env, name) {
+  // `option get` may exit non-zero for an absent option; treat that as an empty value
+  // so the differ reads it as a deleted option rather than aborting the whole read.
+  try {
+    const out = await terminus(['remote:wp', `${site}.${env}`, '--', 'option', 'get', name]);
+    return out.replace(/\n$/, '');
+  } catch {
+    return '';
+  }
+}
+
+// Build the live-state snapshot (ADR-0009 shape) for `site`/`env`, blessing exactly the
+// option names the Baseline's criticalOptions allow-list names — so the collector reads
+// only what the differ will compare.
+//
+//   makeSnapshotCollector({ site, env, token, allowOptionNames }) -> async () => snapshot
+//
+// The returned closure is the `collectSnapshot` edge injected into runDriftScan. It
+// performs the one-time auth on first call, then the four read families.
+function makeSnapshotCollector({ site, env = 'live', token, allowOptionNames = [] } = {}) {
+  const safeSite = assertSafe('pantheon-site', site);
+  const safeEnv = assertSafe('pantheon-env', env);
+  if (!token || typeof token !== 'string') {
+    throw new Error('drift collector: a Pantheon machine token is required.');
+  }
+  const optionNames = Array.isArray(allowOptionNames) ? allowOptionNames.map(String) : [];
+
+  return async function collectSnapshot() {
+    // Authenticate once. The token is an argv value (no shell), masked in logs by the
+    // caller. terminus caches the session for the subsequent remote:wp calls.
+    await terminus(['auth:login', `--machine-token=${token}`]);
+
+    const [pluginList, themeList, adminList] = await Promise.all([
+      remoteWpJson(safeSite, safeEnv, ['plugin', 'list', '--status=active', '--field=name']),
+      remoteWpJson(safeSite, safeEnv, ['theme', 'list', '--status=active', '--field=name']),
+      remoteWpJson(safeSite, safeEnv, ['user', 'list', '--role=administrator', '--field=user_login']),
+    ]);
+
+    const criticalOptions = {};
+    for (const name of optionNames) {
+      criticalOptions[name] = await remoteWpOption(safeSite, safeEnv, name);
+    }
+
+    return {
+      activePlugins: (Array.isArray(pluginList) ? pluginList : []).map(String),
+      activeThemes: (Array.isArray(themeList) ? themeList : []).map(String),
+      administrators: (Array.isArray(adminList) ? adminList : []).map(String),
+      criticalOptions,
+    };
+  };
+}
+
+;// CONCATENATED MODULE: ./src/rebless.mjs
+// Re-bless PR opener — the IMPURE edge that carries a regenerated Baseline into a PR
+// (ADR-0010), never a blind direct commit. The pure half (regenerating the Baseline
+// and rendering the diff) lives in src/baseline.mjs and src/drift-scan.mjs; this module
+// is only the thin Octokit/git-data wiring and is NOT unit-tested.
+//
+// Why a PR, not a push: re-blessing a COMPROMISED live state would silently bless the
+// compromise into the Baseline. The PR forces a human to eyeball the diff (in the PR
+// body) before merging — merging IS the deliberate re-bless. Bootstrap (no prior
+// Baseline) is the same path with a seed/empty diff. The elevated contents:write +
+// pull-requests:write permissions are scoped to the dispatch job only.
+//
+// Implementation: commit the regenerated .security/baseline.json onto a fresh branch
+// via the Git Data API (create blob -> tree -> commit -> ref), then open the PR. Using
+// the API (not a local git checkout) keeps this independent of the runner's working
+// tree and avoids shelling out to git.
+
+const BASELINE_PATH = '.security/baseline.json';
+
+// makeBaselinePrOpener(octokit, { owner, repo }) -> async ({ baselineJson, diff }) => { url }
+//
+// The returned closure is the `openBaselinePr` edge injected into runDriftScan.
+function makeBaselinePrOpener(octokit, { owner, repo }) {
+  return async function openBaselinePr({ baselineJson, diff }) {
+    // Anchor on the default branch's current tip.
+    const { data: repoInfo } = await octokit.rest.repos.get({ owner, repo });
+    const base = repoInfo.default_branch;
+    const { data: baseRef } = await octokit.rest.git.getRef({
+      owner, repo, ref: `heads/${base}`,
+    });
+    const baseSha = baseRef.object.sha;
+    const { data: baseCommit } = await octokit.rest.git.getCommit({
+      owner, repo, commit_sha: baseSha,
+    });
+
+    // A unique branch per dispatch so concurrent re-blesses don't collide.
+    const branch = `wpcare/rebless-baseline-${Date.now()}`;
+
+    // Blob -> tree (one file change on top of the base tree) -> commit -> branch ref.
+    const { data: blob } = await octokit.rest.git.createBlob({
+      owner, repo, content: baselineJson, encoding: 'utf-8',
+    });
+    const { data: tree } = await octokit.rest.git.createTree({
+      owner,
+      repo,
+      base_tree: baseCommit.tree.sha,
+      tree: [{ path: BASELINE_PATH, mode: '100644', type: 'blob', sha: blob.sha }],
+    });
+    const { data: commit } = await octokit.rest.git.createCommit({
+      owner,
+      repo,
+      message: 'chore(security): re-bless drift Baseline from live state',
+      tree: tree.sha,
+      parents: [baseSha],
+    });
+    await octokit.rest.git.createRef({
+      owner, repo, ref: `refs/heads/${branch}`, sha: commit.sha,
+    });
+
+    const body = [
+      'Re-bless the drift Detection **Baseline** (`.security/baseline.json`) from current',
+      'live state. Review the diff below before merging — **merging this PR is the',
+      'deliberate re-bless**. Do not merge if any change is unexpected: that would bless a',
+      'possible compromise into the Baseline.',
+      '',
+      '## Drift being blessed',
+      '',
+      diff,
+    ].join('\n');
+
+    const { data: pr } = await octokit.rest.pulls.create({
+      owner,
+      repo,
+      title: 'chore(security): re-bless drift Baseline',
+      head: branch,
+      base,
+      body,
+    });
+
+    return { url: pr.html_url, number: pr.number, branch };
+  };
+}
+
 ;// CONCATENATED MODULE: ./src/index.mjs
 // The Action entrypoint — thin glue only. Reads inputs, wires the real impure edges
-// (feed fetch, Octokit issue upsert) into the pure orchestrator, then sets the
-// failing workflow status from alert-worthy Findings. All logic is in testable
-// modules; keep this file boring.
+// (feed fetch, Octokit issue upsert, the Terminus drift collector, the re-bless PR
+// opener) into the pure orchestrators, then sets the failing workflow status from
+// alert-worthy Findings. All logic is in testable modules; keep this file boring.
 
 
 
@@ -37778,62 +38533,131 @@ function makeIssueUpserter(octokit, { owner, repo }) {
 
 
 
+
+
+
+
+
+
+
+
+const VALID_MODES = new Set(['vuln', 'drift', 'both']);
+const src_BASELINE_PATH = '.security/baseline.json';
+
+// Build the optional WPScan cross-reference edge from a token (issue #7). Zero-secret
+// default: with NO token the edge is undefined and the scan runs unchanged. The token
+// is a SECRET — masked so the runner scrubs any accidental echo.
+function makeWpscanEdge(wpscanToken) {
+  if (!wpscanToken) return undefined;
+  core_setSecret(wpscanToken);
+  return async (slug) => normalizeWpscanResponse(await fetchWpscanPlugin(slug, wpscanToken));
+}
+
+// Build the Terminus drift collector edge from the Pantheon inputs. The machine token
+// is a SECRET — masked so it never surfaces in logs. The Baseline's criticalOptions
+// keys drive which options the collector reads (so it reads only what the differ
+// compares); with no Baseline yet (bootstrap) it reads the seeded allow-list so a
+// re-bless can seed from a real snapshot.
+function makeCollectorEdge({ site, env, token, baseline }) {
+  const allowOptionNames = baseline && baseline.criticalOptions
+    ? Object.keys(baseline.criticalOptions)
+    : [...SEEDED_CRITICAL_OPTIONS];
+  return makeSnapshotCollector({ site, env, token, allowOptionNames });
+}
 
 async function run() {
-  const mode = getInput('mode') || 'vuln';
-  if (mode !== 'vuln') {
-    // Drift / both are later phases; this slice ships mode=vuln only.
-    setFailed(`mode "${mode}" is not supported yet (this build ships mode=vuln).`);
+  const mode = (getInput('mode') || 'vuln').trim().toLowerCase();
+  if (!VALID_MODES.has(mode)) {
+    setFailed(`mode "${mode}" is not supported (use vuln | drift | both).`);
     return;
   }
 
   const token = getInput('github-token', { required: true });
-  // Optional path override for non-standard layouts; default to the checked-out repo.
   const siteRoot = getInput('site-path') || process.env.GITHUB_WORKSPACE || '.';
-
-  // The `fail-on` severity threshold gates ONLY the failing workflow status; the issue
-  // is always upserted with every Finding. An empty/unknown value defaults to `low`
-  // inside runVulnScan (the gate is never silently disarmed). See scan.mjs.
+  // The `fail-on` threshold gates ONLY the failing workflow status; an empty/unknown
+  // value defaults to `low` inside the gate (never silently disarmed).
   const failOn = getInput('fail-on') || 'low';
-
-  // Optional WPScan cross-reference (issue #7). Zero-secret default: with NO token the
-  // edge is simply not injected and the Vulnerability Scan runs exactly as before. The
-  // token is a SECRET — it is read from the Action input only and never logged. When
-  // present, mark it so the runner masks any accidental echo in logs.
-  const wpscanToken = getInput('wpscan-token');
-  let fetchWpscanData;
-  if (wpscanToken) {
-    core_setSecret(wpscanToken);
-    fetchWpscanData = async (slug) =>
-      normalizeWpscanResponse(await fetchWpscanPlugin(slug, wpscanToken));
-  }
 
   const { owner, repo } = github_context.repo;
   const repoSlug = `${owner}/${repo}`;
   const octokit = getOctokit(token);
+  const upsertIssue = makeIssueUpserter(octokit, { owner, repo });
+  const fetchWpscanData = makeWpscanEdge(getInput('wpscan-token'));
 
-  const result = await runVulnScan({
-    siteRoot,
-    repoSlug,
-    failOn,
-    fetchFeed: () => fetchWordfenceFeed(),
-    fetchPluginInfo: (slug) => fetchPluginInfo(slug),
-    fetchWpscanData,
-    upsertIssue: makeIssueUpserter(octokit, { owner, repo }),
-  });
+  // ── Drift wiring (mode drift | both, and the update-baseline dispatch) ──────────
+  let driftEnv = null;
+  if (mode === 'drift' || mode === 'both') {
+    const pantheonSite = getInput('pantheon-site', { required: true });
+    const pantheonEnv = getInput('pantheon-env') || 'live';
+    const pantheonToken = getInput('pantheon-machine-token', { required: true });
+    core_setSecret(pantheonToken);
+
+    const baselinePath = (0,external_node_path_namespaceObject.join)(siteRoot, src_BASELINE_PATH);
+    // A present-but-malformed Baseline throws (operator error, fail loud); an absent
+    // one is null (bootstrap — handled by the differ / re-bless).
+    const baseline = loadBaseline(baselinePath);
+    const collectSnapshot = makeCollectorEdge({
+      site: pantheonSite, env: pantheonEnv, token: pantheonToken, baseline,
+    });
+    driftEnv = { baseline, collectSnapshot };
+  }
+
+  // ── The update-baseline dispatch: re-bless via a PR, never a scan ───────────────
+  const updateBaseline = getBooleanInput('update-baseline');
+  if (updateBaseline) {
+    if (mode === 'vuln') {
+      setFailed('update-baseline requires mode drift or both (it re-blesses the drift Baseline).');
+      return;
+    }
+    const result = await runDriftScan({
+      repoSlug,
+      baseline: driftEnv.baseline,
+      updateBaseline: true,
+      collectSnapshot: driftEnv.collectSnapshot,
+      openBaselinePr: makeBaselinePrOpener(octokit, { owner, repo }),
+    });
+    info(`Re-bless PR opened: ${result.pr && result.pr.url ? result.pr.url : '(see PRs)'}.`);
+    setOutput('baseline-pr-url', result.pr && result.pr.url ? result.pr.url : '');
+    return;
+  }
+
+  // ── The scan paths ──────────────────────────────────────────────────────────────
+  let result;
+  if (mode === 'vuln') {
+    result = await runVulnScan({
+      siteRoot, repoSlug, failOn, upsertIssue,
+      fetchFeed: () => fetchWordfenceFeed(),
+      fetchPluginInfo: (slug) => fetchPluginInfo(slug),
+      fetchWpscanData,
+    });
+  } else if (mode === 'drift') {
+    result = await runDriftScan({
+      repoSlug, failOn, upsertIssue,
+      baseline: driftEnv.baseline,
+      collectSnapshot: driftEnv.collectSnapshot,
+    });
+  } else {
+    result = await runCombinedScan({
+      siteRoot, repoSlug, failOn, upsertIssue,
+      baseline: driftEnv.baseline,
+      collectSnapshot: driftEnv.collectSnapshot,
+      fetchFeed: () => fetchWordfenceFeed(),
+      fetchPluginInfo: (slug) => fetchPluginInfo(slug),
+      fetchWpscanData,
+    });
+  }
 
   setOutput('finding-count', String(result.findings.length));
   setOutput('alert-count', String(result.alertWorthy));
   setOutput('new-count', String(result.newOrWorsened));
 
   info(
-    `Scanned ${result.inventory.length} inventory item(s); `
-    + `${result.findings.length} Finding(s), ${result.alertWorthy} alert-worthy, `
+    `mode=${mode}: ${result.findings.length} Finding(s), ${result.alertWorthy} alert-worthy, `
     + `${result.newOrWorsened} new/worsened.`,
   );
 
-  // The failing workflow status gates ONLY on the new/worsened subset, so an
-  // unchanged site (its Findings already filed in the deduped issue) runs green.
+  // The failing workflow status gates ONLY on the new/worsened subset, so an unchanged
+  // site (its Findings already filed in the deduped issue) runs green.
   if (result.exitCode !== 0) {
     setFailed(
       `${result.newOrWorsened} new or worsened alert-worthy Finding(s) `

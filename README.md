@@ -5,6 +5,25 @@ GitHub Action** that each site repo calls from a thin ~15-line workflow. It surf
 latent security holes the normal update cycle misses, without running anything on the site
 (Pantheon-friendly, no paid plugin).
 
+> **Status (2026-06-15): live Drift Detection — the Terminus collector edge + PR-based re-bless (issue #11, v0.10.0).**
+> Mode 2 goes live: `mode: drift` (and `mode: both`) now reads security-critical live
+> state off a running Pantheon site via **Terminus / WP-CLI** — active plugins/themes,
+> administrator accounts, and the critical-options allow-list — into the ADR-0009 snapshot
+> the pure differ consumes, authenticating with a **Pantheon machine token** held as the
+> org-level secret `PANTHEON_WPCARE_MACHINE_TOKEN`. The collector is a thin, **read-only**
+> impure edge (only `plugin list` / `theme list` / `user list` / `option get`); least
+> privilege is the **user's**, not the token's (a shared Team-Member service account in a
+> dedicated org of in-scope sites — a machine token cannot be scoped). The seeded
+> critical-options allow-list watches five privilege-escalation / hijack vectors
+> (`default_role`, `users_can_register`, `siteurl`, `home`, `admin_email`). A **collector
+> error fails the run loudly with zero Findings** — the pure differ never fabricates drift
+> from a bad read. `workflow_dispatch` with **`update-baseline: true`** re-blesses the
+> Baseline by **opening a PR** carrying the regenerated `.security/baseline.json` + the diff
+> (never a blind write — merging the PR is the deliberate re-bless), with
+> `contents: write` + `pull-requests: write` scoped to the dispatch job only. `mode: both`
+> merges vuln + drift Findings into the **one** deduped per-site issue. See
+> [ADR-0010](docs/adr/0010-drift-collector-terminus-least-privilege-and-rebless.md).
+>
 > **Status (2026-06-15): Drift Baseline contract + drift differ — the pure half of mode 2 (issue #10, v0.9.0).**
 > Drift Detection's testable half lands: the committed **Baseline** shape
 > (`.security/baseline.json` — expected active plugins/themes, the full admin-account
@@ -157,13 +176,22 @@ jobs:
 
 | Input | Required | Default | Purpose |
 |-------|----------|---------|---------|
-| `mode` | no | `vuln` | Scan mode. Only `vuln` (Vulnerability Scan) ships today; `drift` / `both` are later phases. |
-| `github-token` | yes | — | Token to upsert the deduped per-site issue (needs `issues: write`). Pass `${{ secrets.GITHUB_TOKEN }}`. |
+| `mode` | no | `vuln` | `vuln` (Vulnerability Scan, zero secrets), `drift` (Drift Detection, reads live Pantheon state via Terminus), or `both`. `drift` / `both` require the `pantheon-*` inputs. |
+| `github-token` | yes | — | Token to upsert the deduped per-site issue (needs `issues: write`; the re-bless dispatch additionally needs `contents: write` + `pull-requests: write`). Pass `${{ secrets.GITHUB_TOKEN }}`. |
 | `fail-on` | no | `low` | Minimum severity that **fails the workflow status** (`low \| medium \| high \| critical`). The issue always files *every* Finding; this only gates the failing status. An unscored CVE always fails; an unknown value falls back to `low`. |
-| `site-path` | no | `$GITHUB_WORKSPACE` | Path override for a non-standard docroot (e.g. a johnpbloch `wp/` layout). Defaults to the checked-out repo root. |
+| `site-path` | no | `$GITHUB_WORKSPACE` | Path override for a non-standard docroot (e.g. a johnpbloch `wp/` layout). Defaults to the checked-out repo root. Also where `.security/baseline.json` is read for drift. |
 | `wpscan-token` | no | — | Optional WPScan API token (the calling repo's own secret) to cross-reference per-plugin WPScan data. Omit for the zero-secret default. Pass `${{ secrets.WPSCAN_API_TOKEN }}`. |
+| `pantheon-site` | drift/both | — | Pantheon site machine name. **Explicit, never derived from the repo name** (ADR-0010). |
+| `pantheon-machine-token` | drift/both | — | Pantheon machine token (a **secret**). Pass `${{ secrets.PANTHEON_WPCARE_MACHINE_TOKEN }}` (org-level, scoped to in-scope repos). Masked in logs. |
+| `pantheon-env` | no | `live` | Pantheon environment to read live state from. `live` is the authoritative env. |
+| `update-baseline` | no | `false` | A `workflow_dispatch` input: when `true`, re-bless the drift Baseline by opening a PR with the regenerated `.security/baseline.json` + diff (requires `mode: drift \| both` + `contents: write` + `pull-requests: write`). |
 
-Outputs: `finding-count`, `alert-count`, `new-count` (see [`action.yml`](./action.yml)).
+Outputs: `finding-count`, `alert-count`, `new-count`, `baseline-pr-url` (see [`action.yml`](./action.yml)).
+
+Pantheon drift adoption uses a second workflow — see
+[`examples/per-site-workflow-drift.yml`](./examples/per-site-workflow-drift.yml) (it
+installs Terminus on the runner, scopes the re-bless job's elevated permissions to the
+dispatch only, and reads the org secret `PANTHEON_WPCARE_MACHINE_TOKEN`).
 
 ### Versioning & pinning
 
@@ -204,6 +232,7 @@ scope and secrets in scope.
   - 0007 — render the full report and detect outdated-but-no-CVE as report-only
   - 0008 — the `fail-on` severity gate, `@v0` pinning, and the per-site invocation contract
   - 0009 — the Drift Baseline contract, the live-state snapshot shape, and the drift differ
+  - 0010 — the drift collector edge: Terminus auth, user-scoped least privilege, the critical-options allow-list, and PR-based re-bless
 - **PRD:** [philltran/wpcare-security-scan#1](https://github.com/philltran/wpcare-security-scan/issues/1)
   — the parent document the build is sliced from.
 

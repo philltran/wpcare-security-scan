@@ -12,9 +12,10 @@
     "site-admin"
   ],
   "criticalOptions": {
-    "users_can_register": "0",
     "default_role": "subscriber",
+    "users_can_register": "0",
     "siteurl": "https://example.com",
-    "home": "https://example.com"
+    "home": "https://example.com",
+    "admin_email": "ops@example.com"
   }
 }

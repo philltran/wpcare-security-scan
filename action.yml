@@ -11,7 +11,10 @@ branding:
 
 inputs:
   mode:
-    description: 'Scan mode. This release ships "vuln" (Vulnerability Scan); "drift" and "both" are later phases.'
+    description: >-
+      Scan mode: "vuln" (Vulnerability Scan, reads the git repo, zero secrets), "drift"
+      (Drift Detection, reads live Pantheon state via Terminus and diffs the committed
+      .security/baseline.json), or "both". drift/both require the pantheon-* inputs.
     required: false
     default: 'vuln'
   github-token:
@@ -39,6 +42,35 @@ inputs:
       failing the run for less-severe ones.
     required: false
     default: 'low'
+  pantheon-site:
+    description: >-
+      Pantheon site machine name for Drift Detection (mode drift | both). Site identity
+      is explicit — never derived from the repo name, since a wrong guess pointed at
+      credentialed live access is a dangerous failure (ADR-0010). Required for drift/both.
+    required: false
+    default: ''
+  pantheon-machine-token:
+    description: >-
+      Pantheon machine token for Drift Detection (mode drift | both). A SECRET — pass
+      ${{ secrets.PANTHEON_WPCARE_MACHINE_TOKEN }} (an org-level secret scoped to in-scope
+      repos). The token belongs to a shared Team-Member service account confined to a
+      dedicated org of in-scope sites (least privilege is the USER's, not the token's;
+      a machine token cannot be scoped — ADR-0010). Masked in logs; never printed.
+    required: false
+    default: ''
+  pantheon-env:
+    description: 'Pantheon environment to read live state from. Defaults to "live" (the authoritative env per ADR-0010).'
+    required: false
+    default: 'live'
+  update-baseline:
+    description: >-
+      When true (a workflow_dispatch input), re-bless the drift Baseline: regenerate
+      .security/baseline.json from current live state and open a PR carrying it + the
+      diff (never a blind write — a human merging the PR is the deliberate re-bless,
+      ADR-0010). Requires mode drift | both and contents:write + pull-requests:write on
+      the dispatch job. Defaults to false.
+    required: false
+    default: 'false'
 
 outputs:
   finding-count:
@@ -47,6 +79,8 @@ outputs:
     description: 'Number of alert-worthy Findings (cve / abandoned / embedded).'
   new-count:
     description: 'Number of new or newly-worsened alert-worthy Findings since the last run (this alone gates the failing status).'
+  baseline-pr-url:
+    description: 'URL of the re-bless PR opened by an update-baseline dispatch (empty otherwise).'
 
 runs:
   using: 'node24'

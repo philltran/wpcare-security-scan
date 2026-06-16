@@ -18,7 +18,7 @@
 // new/worsened subset; see src/differ.mjs). The block is a single HTML comment so it
 // never renders to a human, mirroring the dedup marker's hidden-comment idiom.
 
-import { isAlertWorthy } from './matcher.mjs';
+import { isAlertWorthyFinding as isAlertWorthy } from './finding.mjs';
 
 // The dedup label. The exact name was flagged "deferred to implementation" in
 // CONTEXT.md; this is the first concrete choice and stays stable across runs.

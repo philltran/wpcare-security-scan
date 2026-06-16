@@ -17,48 +17,18 @@
 
 import { enumerateInventory } from './inventory.mjs';
 import { normalizeWordfenceFeed } from './wordfence.mjs';
-import { matchVulnerabilities, isAlertWorthy, severityRank } from './matcher.mjs';
+import { matchVulnerabilities } from './matcher.mjs';
 import { abandonedFinding } from './abandoned.mjs';
 import { outdatedFinding } from './outdated.mjs';
 import { mergeDatasets } from './wpscan.mjs';
-import { renderIssueTitle, renderIssueBody, parsePersistedFindings } from './report.mjs';
-import { diffFindings } from './differ.mjs';
+import { finalizeFindings } from './report-gate.mjs';
 
-// The `fail-on` severity threshold (issue #9). It governs ONLY the failing workflow
-// status: the deduped issue is always upserted with every current Finding regardless,
-// but the run fails iff at least one NEW or WORSENED alert-worthy Finding meets-or-
-// exceeds this severity. The per-site workflow sets it to ratchet the noise of the
-// failing status down for a fleet without ever changing what is reported.
-//
-// `low` is the default — it gates on every scored band low..critical, preserving the
-// pre-#9 contract (every new/worsened alert-worthy Finding failed the run). An
-// unrecognized / empty value falls back to `low` rather than disabling the gate: a
-// security gate must never be silently disarmed by a typo. There is deliberately no
-// "off"/"none" sentinel that disables failure — a site that wants the issue-only
-// behavior raises the threshold above its Findings explicitly.
-const DEFAULT_FAIL_ON = 'low';
-
-// Resolve a `fail-on` input string to a numeric rank using the matcher's existing
-// severity scale. An unknown token resolves to the low rank (fail-safe default).
-function failOnRank(failOn) {
-  const token = String(failOn ?? '').trim().toLowerCase() || DEFAULT_FAIL_ON;
-  const rank = severityRank(token);
-  // severityRank returns 0 for an unrecognized token (it shares `unknown`'s rank).
-  // Only `unknown` itself legitimately ranks 0; any *other* unrecognized token must
-  // fall back to the low default so a typo never disables the gate.
-  if (rank === 0 && token !== 'unknown') return severityRank(DEFAULT_FAIL_ON);
-  return rank;
-}
-
-// Does a Finding's severity meet-or-exceed the threshold? An UNSCORED CVE (severity
-// 'unknown', rank 0 — a CVE the feed carries with no CVSS) is treated as always
-// meeting any threshold: a security tool must not silently swallow a vuln it cannot
-// rank. Every other band is a straight rank comparison.
-function meetsThreshold(finding, thresholdRank) {
-  if (!finding) return false;
-  if (finding.severity === 'unknown') return true;
-  return severityRank(finding.severity) >= thresholdRank;
-}
+// The `fail-on` severity threshold (issue #9) governs ONLY the failing workflow status
+// and is applied in the shared report+gate tail (src/report-gate.mjs, via src/gate.mjs):
+// the deduped issue is always upserted with every current Finding regardless, but the
+// run fails iff at least one NEW or WORSENED alert-worthy Finding meets-or-exceeds the
+// severity. `low` is the fail-safe default; an unrecognized value falls back to `low`
+// (never silently disarmed). See ADR-0008.
 
 // Bound the per-slug wordpress.org fan-out: a full-inventory site can carry 30+
 // plugins, and we will not query them all at once (socket/rate pressure on wp.org).
@@ -176,14 +146,16 @@ async function detectWporgFindings(inventory, fetchPluginInfo, cveSlugs) {
   return findings;
 }
 
-export async function runVulnScan({
+// Produce the complete Vulnerability Scan Finding list (the PURE-spine half, with the
+// injected impure reads). Returned with the inventory so a caller can render/finalize —
+// and so `both` mode can MERGE these with drift Findings into one deduped issue before
+// finalizing once. The report shows EVERY detected Finding (including report-only
+// outdated); the finalize tail decides what is alert-worthy and what gates the status.
+export async function produceVulnFindings({
   siteRoot,
-  repoSlug,
-  failOn,
   fetchFeed,
   fetchPluginInfo,
   fetchWpscanData,
-  upsertIssue,
 } = {}) {
   const inventory = enumerateInventory(siteRoot);
 
@@ -208,38 +180,25 @@ export async function runVulnScan({
   const wporgFindings = await detectWporgFindings(inventory, fetchPluginInfo, cveSlugs);
   for (const f of wporgFindings) findings.push(f);
 
-  const alertWorthy = findings.filter(isAlertWorthy);
+  return { inventory, findings };
+}
 
-  // The rendered report shows EVERY detected Finding (including report-only outdated) so
-  // a maintainer has the complete picture; the reporter persists + counts only the
-  // alert-worthy subset, so report-only items never trip the gate. The differ below
-  // still runs over `alertWorthy` alone.
-  const title = renderIssueTitle(findings);
-  const body = renderIssueBody(repoSlug, findings);
+export async function runVulnScan({
+  siteRoot,
+  repoSlug,
+  failOn,
+  fetchFeed,
+  fetchPluginInfo,
+  fetchWpscanData,
+  upsertIssue,
+} = {}) {
+  const { inventory, findings } = await produceVulnFindings({
+    siteRoot, fetchFeed, fetchPluginInfo, fetchWpscanData,
+  });
 
-  // Upsert in place. The returned `priorBody` is the existing issue's body from before
-  // this run (null on the first run, when no issue exists yet) — the thin impure read
-  // that feeds the pure diff.
-  const upsert = (await upsertIssue({ repoSlug, title, body })) || {};
+  // Render + upsert the deduped issue, diff to the new/worsened subset, apply the
+  // fail-on gate — the shared tail every mode runs (src/report-gate.mjs).
+  const finalized = await finalizeFindings({ repoSlug, findings, failOn, upsertIssue });
 
-  // Alert only on the new/worsened subset: recover the prior persisted Findings and
-  // diff. The failing-status gate fires on this subset alone, so an unchanged site
-  // (same Findings, none new or worsened) runs GREEN.
-  const prior = parsePersistedFindings(upsert.priorBody);
-  const newOrWorsened = diffFindings(prior, alertWorthy);
-
-  // The `fail-on` threshold further narrows the gate to the new/worsened Findings whose
-  // severity meets-or-exceeds it. The deduped issue above already carries EVERY current
-  // Finding (the report is complete regardless of fail-on); this only governs whether
-  // the workflow *status* fails. An unscored CVE always counts (fail-loud).
-  const threshold = failOnRank(failOn);
-  const gating = newOrWorsened.filter((f) => meetsThreshold(f, threshold));
-
-  return {
-    inventory,
-    findings,
-    alertWorthy: alertWorthy.length,
-    newOrWorsened: newOrWorsened.length,
-    exitCode: gating.length > 0 ? 1 : 0,
-  };
+  return { inventory, ...finalized };
 }
