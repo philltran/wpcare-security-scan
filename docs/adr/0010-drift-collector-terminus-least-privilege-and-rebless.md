@@ -107,9 +107,9 @@ scoped to the dispatch job only; normal scheduled/PR drift runs keep `issues: wr
 - New Action inputs: required `pantheon-site` (machine name) and `pantheon-machine-token`
   (secret), optional `pantheon-env` (default `live`) and `update-baseline` (boolean).
   Non-secret values live literally in the committed per-site workflow `with:` block; the
-  token is a **GitHub Actions secret**, defined once as an **org-level secret** scoped to
-  the in-scope repos (matching the shared-account decision) — never a `.env` file, never a
-  runner env var. Site identity is **explicit**, never derived from the repo name, because
+  token is a **GitHub Actions secret** named **`PANTHEON_WPCARE_MACHINE_TOKEN`**, defined
+  once as an **org-level secret** scoped to the in-scope repos (matching the shared-account
+  decision) — never a `.env` file, never a runner env var. Site identity is **explicit**, never derived from the repo name, because
   a wrong-guessed convention pointed at credentialed live access is a dangerous failure.
 - **Three distinct outcomes:** live matches Baseline → green; real drift → Findings +
   failing status (per `fail-on`); **collector error** (auth rejected / SSH down / no usable
