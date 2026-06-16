@@ -18,7 +18,7 @@ inputs:
     required: false
     default: 'vuln'
   github-token:
-    description: 'Token used to upsert the deduped per-site security issue. Needs issues:write. Pass ${{ secrets.GITHUB_TOKEN }}.'
+    description: 'Token used to upsert the deduped per-site security issue. Needs issues:write. Pass the workflow secrets.GITHUB_TOKEN.'
     required: true
   site-path:
     description: 'Path to the checked-out site repo root for non-standard layouts. Defaults to GITHUB_WORKSPACE.'
@@ -29,7 +29,7 @@ inputs:
       Optional WPScan API token. When supplied, per-plugin WPScan data is cross-referenced
       through the same matcher to add Findings the free Wordfence feed missed. When omitted,
       the Vulnerability Scan runs unchanged and needs zero secrets (the default). The token
-      is a secret — pass ${{ secrets.WPSCAN_API_TOKEN }}; it is masked in logs and never printed.
+      is a secret — pass the workflow secrets.WPSCAN_API_TOKEN; it is masked in logs and never printed.
     required: false
     default: ''
   fail-on:
@@ -52,8 +52,8 @@ inputs:
   pantheon-machine-token:
     description: >-
       Pantheon machine token for Drift Detection (mode drift | both). A SECRET — pass
-      ${{ secrets.PANTHEON_WPCARE_MACHINE_TOKEN }} (an org-level secret scoped to in-scope
-      repos). The token belongs to a shared Team-Member service account confined to a
+      the workflow secrets.PANTHEON_WPCARE_MACHINE_TOKEN (an org-level secret scoped to
+      in-scope repos). The token belongs to a shared Team-Member service account confined to a
       dedicated org of in-scope sites (least privilege is the USER's, not the token's;
       a machine token cannot be scoped — ADR-0010). Masked in logs; never printed.
     required: false
