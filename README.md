@@ -74,8 +74,8 @@ latent security holes the normal update cycle misses, without running anything o
 > [ADR-0007](docs/adr/0007-report-only-outdated-and-full-report.md). Earlier slice:
 > optional WPScan cross-reference (issue #7, v0.6.0).
 > The Vulnerability Scan also takes an **optional WPScan cross-reference** that deepens
-> coverage when a `WPSCAN_API_TOKEN` is supplied — and stays a **zero-secret default** when
-> it is not. With no token, behavior is unchanged and the scan needs no credentials; with a
+> coverage when a `WPSCAN_API_TOKEN` is supplied — and is **off by default** when
+> it is not. With no token, behavior is unchanged; with a
 > token, per-plugin WPScan data is folded into the Wordfence dataset and matched through the
 > **same** version-range / severity matcher (no parallel path), adding Findings the free feed
 > missed. The fetch is a thin impure edge (`src/wpscan.mjs`, token-gated, fail-safe, like the
@@ -125,7 +125,8 @@ Two modes, shipped in phases:
   bundled inside themes/other plugins**, then matches each against the **free Wordfence
   Intelligence vulnerability feed** (optional WPScan cross-reference). Raises Findings for
   known CVEs, abandoned/closed plugins, and embedded plugins. Activation status is ignored —
-  it reads files, not WordPress's active-plugin list. Zero secrets.
+  it reads files, not WordPress's active-plugin list. Needs only the free
+  `wordfence-token` for the v3 feed (ADR-0013) — no Pantheon credentials.
 - **Drift Detection (mode 2)** — reads live security-critical state via **Terminus** and
   diffs it against a committed, deliberately-blessed **Baseline** (`.security/baseline.json`):
   active plugins/themes, administrator accounts, a critical-options allow-list. Catches
@@ -169,6 +170,7 @@ jobs:
         with:
           mode: vuln
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          wordfence-token: ${{ secrets.WORDFENCE_INTELLIGENCE_TOKEN }}  # free v3 token (ADR-0013)
           fail-on: low     # low | medium | high | critical
 ```
 
@@ -176,11 +178,12 @@ jobs:
 
 | Input | Required | Default | Purpose |
 |-------|----------|---------|---------|
-| `mode` | no | `vuln` | `vuln` (Vulnerability Scan, zero secrets), `drift` (Drift Detection, reads live Pantheon state via Terminus), or `both`. `drift` / `both` require the `pantheon-*` inputs. |
+| `mode` | no | `vuln` | `vuln` (Vulnerability Scan), `drift` (Drift Detection, reads live Pantheon state via Terminus), or `both`. `drift` / `both` require the `pantheon-*` inputs. |
 | `github-token` | yes | — | Token to upsert the deduped per-site issue (needs `issues: write`; the re-bless dispatch additionally needs `contents: write` + `pull-requests: write`). Pass `${{ secrets.GITHUB_TOKEN }}`. |
+| `wordfence-token` | vuln/both | — | **Free** Wordfence Intelligence v3 API token (the old no-auth feed was removed — [ADR-0013](./docs/adr/0013-wordfence-v3-feed-requires-free-token.md)). Generate one in your Wordfence account → Integrations. Pass `${{ secrets.WORDFENCE_INTELLIGENCE_TOKEN }}`. Free tier is **1 request / 30 min per token** — prefer a per-repo token over one shared org token across a busy fleet. |
 | `fail-on` | no | `low` | Minimum severity that **fails the workflow status** (`low \| medium \| high \| critical`). The issue always files *every* Finding; this only gates the failing status. An unscored CVE always fails; an unknown value falls back to `low`. |
 | `site-path` | no | `$GITHUB_WORKSPACE` | Path override for a non-standard docroot (e.g. a johnpbloch `wp/` layout). Defaults to the checked-out repo root. Also where `.security/baseline.json` is read for drift. |
-| `wpscan-token` | no | — | Optional WPScan API token (the calling repo's own secret) to cross-reference per-plugin WPScan data. Omit for the zero-secret default. Pass `${{ secrets.WPSCAN_API_TOKEN }}`. |
+| `wpscan-token` | no | — | Optional WPScan API token (the calling repo's own secret) to cross-reference per-plugin WPScan data. Omit to leave the cross-reference off. Pass `${{ secrets.WPSCAN_API_TOKEN }}`. |
 | `pantheon-site` | drift/both | — | Pantheon site machine name. **Explicit, never derived from the repo name** (ADR-0010). |
 | `pantheon-machine-token` | drift/both | — | Pantheon machine token (a **secret**). Pass `${{ secrets.PANTHEON_WPCARE_MACHINE_TOKEN }}` (org-level, scoped to in-scope repos). Masked in logs. |
 | `pantheon-env` | no | `live` | Pantheon environment to read live state from. `live` is the authoritative env. |
@@ -211,9 +214,9 @@ repo:
 ### Secret boundary
 
 The scan runs **entirely inside the calling repo's own secret boundary** — there are no
-cross-repo credentials. Vuln mode is **zero-secret**: it needs only the repo's own
-`GITHUB_TOKEN` (to upsert the issue). The optional `wpscan-token` is the *calling* repo's
-secret, masked in logs. The per-site workflow triggers on **`pull_request`** (so a vulnerable
+cross-repo credentials. Vuln mode needs the repo's own `GITHUB_TOKEN` (to upsert the issue)
+plus the **free** `wordfence-token` for the v3 feed (ADR-0013; the old no-auth feed was
+removed). The optional `wpscan-token` is the *calling* repo's secret, masked in logs. The per-site workflow triggers on **`pull_request`** (so a vulnerable
 or bundled-plugin change is caught *before* it merges — shift-left) and deliberately **never**
 on `pull_request_target`: a fork PR's head is attacker-controlled and must not run with write
 scope and secrets in scope. The corollary rule is **never execute PR-supplied code with the

@@ -2,7 +2,10 @@
 
 Date: 2026-06-14
 
-Status: Accepted
+Status: Accepted — **amended by [ADR-0013](0013-wordfence-v3-feed-requires-free-token.md)**
+(2026-06-16): the v1/v2 no-auth feeds were removed; the v3 feed is still free but now
+requires a free registered API token. Wordfence remains the primary source; the "zero
+secrets / no-auth" property below no longer holds for vuln mode.
 
 ## Context
 

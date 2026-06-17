@@ -49,6 +49,7 @@ jobs:
         with:
           mode: both                          # vuln + drift in one deduped issue
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          wordfence-token: ${{ secrets.WORDFENCE_INTELLIGENCE_TOKEN }}  # free v3 token; required for vuln/both (ADR-0013)
           fail-on: low                        # low | medium | high | critical
           pantheon-site: my-site-machine-name # explicit; never derived from the repo name
           pantheon-env: live                  # the authoritative env

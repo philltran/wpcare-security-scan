@@ -92,8 +92,9 @@ Action on a schedule / PR / dispatch. The only per-site footprint.
 
 - **"No Wordfence."** The constraint was *no Wordfence plugin* (paid, poor on
   Pantheon). The scanner uses the *Wordfence Intelligence vulnerability data feed*
-  — a free, no-auth JSON download consumed off-platform. Different thing; see
-  ADR-0003.
+  — a free JSON download consumed off-platform (the v3 feed needs a free registered
+  token; the old no-auth feed was removed — ADR-0003 as amended by ADR-0013). Different
+  thing; see ADR-0003.
 - **"Ping us via email."** v1 delivers the email ping via GitHub's watch
   notification on a *failing workflow run*, not a dedicated SMTP mailer (deferred).
   The requirement is met without managing mail credentials.

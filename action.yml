@@ -12,7 +12,7 @@ branding:
 inputs:
   mode:
     description: >-
-      Scan mode: "vuln" (Vulnerability Scan, reads the git repo, zero secrets), "drift"
+      Scan mode: "vuln" (Vulnerability Scan, reads the git repo; needs the free wordfence-token), "drift"
       (Drift Detection, reads live Pantheon state via Terminus and diffs the committed
       .security/baseline.json), or "both". drift/both require the pantheon-* inputs.
     required: false
@@ -24,11 +24,21 @@ inputs:
     description: 'Path to the checked-out site repo root for non-standard layouts. Defaults to GITHUB_WORKSPACE.'
     required: false
     default: ''
+  wordfence-token:
+    description: >-
+      Free Wordfence Intelligence API token for the v3 vulnerability feed. REQUIRED for
+      mode vuln | both (the free no-auth v1/v2 feeds were removed; ADR-0013). The v3 feed
+      is still free for personal and commercial use — generate a token in your Wordfence
+      account under Integrations. Free-tier limit is 1 request per 30 minutes per token, so
+      prefer a per-repo token over one shared org token across a busy fleet. A SECRET — pass
+      the workflow secrets.WORDFENCE_INTELLIGENCE_TOKEN; masked in logs, never printed.
+    required: false
+    default: ''
   wpscan-token:
     description: >-
       Optional WPScan API token. When supplied, per-plugin WPScan data is cross-referenced
       through the same matcher to add Findings the free Wordfence feed missed. When omitted,
-      the Vulnerability Scan runs unchanged and needs zero secrets (the default). The token
+      the Vulnerability Scan runs unchanged with no WPScan token (the default). The token
       is a secret — pass the workflow secrets.WPSCAN_API_TOKEN; it is masked in logs and never printed.
     required: false
     default: ''

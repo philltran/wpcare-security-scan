@@ -36,5 +36,10 @@ jobs:
         with:
           mode: vuln                          # vuln is the only mode shipped today
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          # The v3 Wordfence Intelligence feed needs a FREE token (the old no-auth feed was
+          # removed — ADR-0013). Generate one in your Wordfence account → Integrations.
+          # Free tier is 1 request / 30 min per token, so prefer a per-repo secret over a
+          # shared org one across a busy fleet.
+          wordfence-token: ${{ secrets.WORDFENCE_INTELLIGENCE_TOKEN }}
           fail-on: low                        # low | medium | high | critical
           # site-path: wp                     # only for a non-standard docroot

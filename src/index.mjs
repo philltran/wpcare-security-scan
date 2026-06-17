@@ -62,6 +62,20 @@ export async function run() {
   const upsertIssue = makeIssueUpserter(octokit, { owner, repo });
   const fetchWpscanData = makeWpscanEdge(core.getInput('wpscan-token'));
 
+  // The Wordfence Intelligence v3 feed requires a free API token (ADR-0013) — required
+  // for any mode that runs the Vulnerability Scan (vuln | both), not for drift-only. A
+  // SECRET — masked so the runner scrubs any accidental echo.
+  const wordfenceToken = core.getInput('wordfence-token');
+  if ((mode === 'vuln' || mode === 'both') && !wordfenceToken) {
+    core.setFailed(
+      'wordfence-token is required for mode vuln | both: the free no-auth Wordfence feed '
+      + 'was removed; generate a free token in your Wordfence account → Integrations and '
+      + 'pass it as the wordfence-token input (see ADR-0013).',
+    );
+    return;
+  }
+  if (wordfenceToken) core.setSecret(wordfenceToken);
+
   // ── Drift wiring (mode drift | both, and the update-baseline dispatch) ──────────
   let driftEnv = null;
   if (mode === 'drift' || mode === 'both') {
@@ -104,7 +118,7 @@ export async function run() {
   if (mode === 'vuln') {
     result = await runVulnScan({
       siteRoot, repoSlug, failOn, upsertIssue,
-      fetchFeed: () => fetchWordfenceFeed(),
+      fetchFeed: () => fetchWordfenceFeed(wordfenceToken),
       fetchPluginInfo: (slug) => fetchPluginInfo(slug),
       fetchWpscanData,
     });
@@ -119,7 +133,7 @@ export async function run() {
       siteRoot, repoSlug, failOn, upsertIssue,
       baseline: driftEnv.baseline,
       collectSnapshot: driftEnv.collectSnapshot,
-      fetchFeed: () => fetchWordfenceFeed(),
+      fetchFeed: () => fetchWordfenceFeed(wordfenceToken),
       fetchPluginInfo: (slug) => fetchPluginInfo(slug),
       fetchWpscanData,
     });
