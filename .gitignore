@@ -1,3 +1,7 @@
 node_modules/
 *.log
 .DS_Store
+
+# Locally-downloaded CI run logs (gh run download artifacts)
+logs_*/
+logs_*.zip

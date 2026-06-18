@@ -30,16 +30,36 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5   # v5 runs on Node 24; v4 trips the Node 20 deprecation warning
+
+      # The v3 Wordfence Intelligence feed is ~123 MB and rate-limited to 1 request / 30 min
+      # per token, so we fetch it AT MOST once per UTC day and cache it — PR pushes, re-runs,
+      # and the weekly scan reuse the cached copy and never hit the limit (ADR-0014). The
+      # FREE token (Wordfence account → Integrations) is used only on a cache miss.
+      - id: day
+        run: echo "d=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      - id: feed
+        uses: actions/cache@v4
+        with:
+          path: .wf-feed/feed.json
+          key: wordfence-feed-${{ steps.day.outputs.d }}
+      - if: steps.feed.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .wf-feed
+          curl -sSf -H "Authorization: Bearer ${{ secrets.WORDFENCE_INTELLIGENCE_TOKEN }}" \
+            https://www.wordfence.com/api/intelligence/v3/vulnerabilities/production \
+            -o .wf-feed/feed.json
+
       # Pin to the moving major tag so a fix propagates fleet-wide. Pre-1.0 this is
       # @v0 (the contract may still shift); upgrade deliberately when @v1 ships.
       - uses: philltran/wpcare-security-scan@v0
         with:
           mode: vuln                          # vuln is the only mode shipped today
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          # The v3 Wordfence Intelligence feed needs a FREE token (the old no-auth feed was
-          # removed — ADR-0013). Generate one in your Wordfence account → Integrations.
-          # Free tier is 1 request / 30 min per token, so prefer a per-repo secret over a
-          # shared org one across a busy fleet.
-          wordfence-token: ${{ secrets.WORDFENCE_INTELLIGENCE_TOKEN }}
+          feed-path: .wf-feed/feed.json       # read the cached feed; no per-run Wordfence call
           fail-on: low                        # low | medium | high | critical
           # site-path: wp                     # only for a non-standard docroot
+      #
+      # Simplest alternative (no cache): drop the day/feed/curl steps above and let the
+      # Action fetch directly — but every run then downloads 123 MB and can hit the
+      # 1-req/30-min limit. Pass the token instead of feed-path:
+      #     wordfence-token: ${{ secrets.WORDFENCE_INTELLIGENCE_TOKEN }}

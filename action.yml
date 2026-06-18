@@ -27,11 +27,22 @@ inputs:
   wordfence-token:
     description: >-
       Free Wordfence Intelligence API token for the v3 vulnerability feed. REQUIRED for
-      mode vuln | both (the free no-auth v1/v2 feeds were removed; ADR-0013). The v3 feed
-      is still free for personal and commercial use — generate a token in your Wordfence
-      account under Integrations. Free-tier limit is 1 request per 30 minutes per token, so
-      prefer a per-repo token over one shared org token across a busy fleet. A SECRET — pass
-      the workflow secrets.WORDFENCE_INTELLIGENCE_TOKEN; masked in logs, never printed.
+      mode vuln | both UNLESS feed-path is set (the free no-auth v1/v2 feeds were removed;
+      ADR-0013). The v3 feed is still free for personal and commercial use — generate a
+      token in your Wordfence account under Integrations. Free-tier limit is 1 request per
+      30 minutes per token, so prefer feed-path caching/mirroring (ADR-0014) or a per-repo
+      token over one shared org token across a busy fleet. A SECRET — pass the workflow
+      secrets.WORDFENCE_INTELLIGENCE_TOKEN; masked in logs, never printed.
+    required: false
+    default: ''
+  feed-path:
+    description: >-
+      Path to a PRE-FETCHED Wordfence feed JSON file on disk. When set, the Action reads
+      the feed from this file instead of calling Wordfence — so the workflow can cache it
+      (actions/cache) or point at a mirror, avoiding the 123 MB per-run download and the
+      1-request/30-min v3 rate limit (ADR-0014). With feed-path set, wordfence-token is not
+      required (the credential, if any, lived in the workflow step that fetched the file).
+      A missing/truncated/non-JSON file fails the run loud — never a silent empty feed.
     required: false
     default: ''
   wpscan-token:

@@ -11,7 +11,7 @@ import * as github from '@actions/github';
 import { runVulnScan } from './scan.mjs';
 import { runDriftScan } from './drift-scan.mjs';
 import { runCombinedScan } from './combined.mjs';
-import { fetchWordfenceFeed } from './feed.mjs';
+import { fetchWordfenceFeed, loadFeedFromFile } from './feed.mjs';
 import { fetchPluginInfo } from './wporg.mjs';
 import { fetchWpscanPlugin, normalizeWpscanResponse } from './wpscan.mjs';
 import { makeIssueUpserter } from './issue.mjs';
@@ -62,19 +62,27 @@ export async function run() {
   const upsertIssue = makeIssueUpserter(octokit, { owner, repo });
   const fetchWpscanData = makeWpscanEdge(core.getInput('wpscan-token'));
 
-  // The Wordfence Intelligence v3 feed requires a free API token (ADR-0013) — required
-  // for any mode that runs the Vulnerability Scan (vuln | both), not for drift-only. A
-  // SECRET — masked so the runner scrubs any accidental echo.
+  // The feed source (ADR-0013/0014). `feed-path` reads a pre-fetched feed from disk so the
+  // workflow can cache it (actions/cache) or point at a mirror — avoiding the 123 MB
+  // per-run download and the 1-req/30-min v3 rate limit. With no feed-path, the Action
+  // fetches the v3 feed directly and a free wordfence-token is REQUIRED for any mode that
+  // runs the Vulnerability Scan (vuln | both), not for drift-only. The token is a SECRET.
+  const feedPath = core.getInput('feed-path');
   const wordfenceToken = core.getInput('wordfence-token');
-  if ((mode === 'vuln' || mode === 'both') && !wordfenceToken) {
+  if ((mode === 'vuln' || mode === 'both') && !feedPath && !wordfenceToken) {
     core.setFailed(
-      'wordfence-token is required for mode vuln | both: the free no-auth Wordfence feed '
-      + 'was removed; generate a free token in your Wordfence account → Integrations and '
-      + 'pass it as the wordfence-token input (see ADR-0013).',
+      'wordfence-token is required for mode vuln | both (the free no-auth Wordfence feed '
+      + 'was removed): generate a free token in your Wordfence account → Integrations and '
+      + 'pass it as wordfence-token, OR pre-fetch the feed and pass feed-path (ADR-0013/0014).',
     );
     return;
   }
   if (wordfenceToken) core.setSecret(wordfenceToken);
+  // One feed source for every mode that needs it: a cached/mirrored file when feed-path is
+  // set, else a direct Wordfence v3 fetch.
+  const fetchFeed = feedPath
+    ? () => loadFeedFromFile(feedPath)
+    : () => fetchWordfenceFeed(wordfenceToken);
 
   // ── Drift wiring (mode drift | both, and the update-baseline dispatch) ──────────
   let driftEnv = null;
@@ -118,7 +126,7 @@ export async function run() {
   if (mode === 'vuln') {
     result = await runVulnScan({
       siteRoot, repoSlug, failOn, upsertIssue,
-      fetchFeed: () => fetchWordfenceFeed(wordfenceToken),
+      fetchFeed,
       fetchPluginInfo: (slug) => fetchPluginInfo(slug),
       fetchWpscanData,
     });
@@ -133,7 +141,7 @@ export async function run() {
       siteRoot, repoSlug, failOn, upsertIssue,
       baseline: driftEnv.baseline,
       collectSnapshot: driftEnv.collectSnapshot,
-      fetchFeed: () => fetchWordfenceFeed(wordfenceToken),
+      fetchFeed,
       fetchPluginInfo: (slug) => fetchPluginInfo(slug),
       fetchWpscanData,
     });
