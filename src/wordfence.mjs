@@ -27,7 +27,12 @@ function firstReference(record) {
 }
 
 export function normalizeWordfenceFeed(rawFeed) {
-  const bySlug = {};
+  // A null-prototype map: slugs come from the external feed and some collide with
+  // Object.prototype members (e.g. a slug "constructor" or "__proto__"). On a plain {}
+  // that makes `bySlug[slug]` an inherited function and `(... ||= []).push` throws; a
+  // null-proto object has no such members, so every slug — including "__proto__" — is a
+  // safe own key. (Real-data bug surfaced on the live Wordfence feed.)
+  const bySlug = Object.create(null);
   if (!rawFeed || typeof rawFeed !== 'object') return bySlug;
 
   for (const record of Object.values(rawFeed)) {

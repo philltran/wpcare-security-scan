@@ -114,8 +114,9 @@ export function mergeDatasets(wordfence, wpscan) {
   const extra = wpscan && typeof wpscan === 'object' ? wpscan : {};
 
   // Deep-ish copy of the per-slug arrays so the matcher can't be surprised by aliasing
-  // and the caller's Wordfence dataset stays untouched.
-  const merged = {};
+  // and the caller's Wordfence dataset stays untouched. Null-prototype map — slugs are
+  // external and may collide with Object.prototype members (see src/wordfence.mjs).
+  const merged = Object.create(null);
   for (const [slug, records] of Object.entries(base)) {
     merged[slug] = Array.isArray(records) ? records.slice() : records;
   }
@@ -138,7 +139,9 @@ export function mergeDatasets(wordfence, wpscan) {
 }
 
 export function normalizeWpscanResponse(rawResponse) {
-  const bySlug = {};
+  // Null-prototype map — slugs are external and may collide with Object.prototype
+  // members (see src/wordfence.mjs for the same fix and why).
+  const bySlug = Object.create(null);
   if (!rawResponse || typeof rawResponse !== 'object') return bySlug;
 
   // An error/not-found body (e.g. { status:'error', error:'Not found' }) carries no

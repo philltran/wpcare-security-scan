@@ -27,6 +27,32 @@ test('normalizes the raw feed to { slug -> [vuln records] }', () => {
   assert.match(v.url, /wordfence\.com/);
 });
 
-test('returns an empty object for an empty feed', () => {
-  assert.deepEqual(normalizeWordfenceFeed({}), {});
+test('returns an empty map for an empty feed', () => {
+  // Spread to a plain object: the normalizer returns a null-prototype map (see below),
+  // and assert/strict's deepEqual checks prototypes.
+  assert.deepEqual({ ...normalizeWordfenceFeed({}) }, {});
+});
+
+test('a slug that collides with an Object.prototype member does not throw and is captured', () => {
+  // Real-data regression: the live feed carries software slugs that shadow prototype
+  // members (e.g. "constructor", "__proto__"). A plain {} map threw
+  // "bySlug[slug].push is not a function"; the null-proto map handles them as plain keys.
+  const feed = {
+    'CVE-X': {
+      cve: 'CVE-X',
+      title: 't',
+      cvss: { score: 5 },
+      references: ['https://example.test'],
+      software: [
+        { slug: 'constructor', affected_versions: { '*': { to_version: '1.0', to_inclusive: false } } },
+        { slug: '__proto__', affected_versions: { '*': { to_version: '2.0', to_inclusive: false } } },
+        { slug: 'toString', affected_versions: { '*': { to_version: '3.0', to_inclusive: false } } },
+      ],
+    },
+  };
+  let bySlug;
+  assert.doesNotThrow(() => { bySlug = normalizeWordfenceFeed(feed); });
+  assert.ok(Array.isArray(bySlug.constructor) && bySlug.constructor[0].fixed_in === '1.0');
+  assert.ok(Array.isArray(bySlug.__proto__) && bySlug.__proto__[0].fixed_in === '2.0');
+  assert.ok(Array.isArray(bySlug.toString) && bySlug.toString[0].fixed_in === '3.0');
 });

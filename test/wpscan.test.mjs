@@ -61,14 +61,17 @@ test('a WPScan vuln with no cvss maps to an unknown-severity record (null cvss)'
   assert.equal(noCvss.cvss, null, 'absent cvss => null (matcher maps to unknown)');
 });
 
+// The normalizers/merge return null-prototype maps (slugs are external and may collide
+// with Object.prototype members; see src/wordfence.mjs). assert/strict's deepEqual checks
+// prototypes, so spread to a plain object before comparing to {}.
 test('a not-found / error response normalizes to an empty dataset (fail-safe)', () => {
-  assert.deepEqual(normalizeWpscanResponse(fixture('not-found.json')), {});
+  assert.deepEqual({ ...normalizeWpscanResponse(fixture('not-found.json')) }, {});
 });
 
 test('a null / garbage response normalizes to an empty dataset', () => {
-  assert.deepEqual(normalizeWpscanResponse(null), {});
-  assert.deepEqual(normalizeWpscanResponse('nope'), {});
-  assert.deepEqual(normalizeWpscanResponse({}), {});
+  assert.deepEqual({ ...normalizeWpscanResponse(null) }, {});
+  assert.deepEqual({ ...normalizeWpscanResponse('nope') }, {});
+  assert.deepEqual({ ...normalizeWpscanResponse({}) }, {});
 });
 
 // --- the cross-source merge (maintainer decision: dedup by CVE, Wordfence wins;
@@ -119,7 +122,7 @@ test('merge: a slug only WPScan knows about is added wholesale', () => {
 
 test('merge: an empty WPScan dataset returns the Wordfence dataset unchanged', () => {
   const merged = mergeDatasets(WORDFENCE_DS, {});
-  assert.deepEqual(merged, WORDFENCE_DS);
+  assert.deepEqual({ ...merged }, WORDFENCE_DS);
 });
 
 test('merge: a missing Wordfence dataset still yields the WPScan entries', () => {
