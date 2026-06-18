@@ -1,6 +1,6 @@
 # Per-site workflow for Drift Detection (Pantheon sites) — drop into a Pantheon site
-# repo at .github/workflows/security-scan-drift.yml. This is the only per-site
-# footprint; all logic lives in the versioned Action.
+# repo at .github/workflows/security-scan.yml. This is the only per-site footprint;
+# all logic lives in the versioned Action.
 #
 # Drift Detection reads live security-critical state via Terminus (mode: drift) or
 # alongside the Vulnerability Scan (mode: both) and diffs it against the committed
@@ -11,9 +11,17 @@
 #   - rebless   — a workflow_dispatch with update-baseline=true; re-blesses the Baseline
 #                 by opening a PR (contents:write + pull-requests:write, dispatch only).
 #
-# SECRET: the Pantheon machine token is an ORG-LEVEL secret scoped to in-scope repos —
-# PANTHEON_WPCARE_MACHINE_TOKEN — owned by a shared Team-Member service account confined
-# to a dedicated org of in-scope sites (ADR-0010). Never a .env file, never a runner env.
+# SECRETS (org-level, scoped to in-scope repos; owned by a shared Team-Member service
+# account confined to a dedicated org of in-scope sites — ADR-0010):
+#   - PANTHEON_WPCARE_MACHINE_TOKEN — authenticates the Terminus API (auth:login).
+#   - PANTHEON_SSH_PRIVATE_KEY      — `terminus remote:wp` reads live state over SSH and
+#       authenticates with an SSH KEY, NOT the machine token (ADR-0010 amendment). Register
+#       the matching PUBLIC key on the SAME service account (`terminus ssh-key:add`). Both
+#       credentials must belong to the same Pantheon user.
+#   - WORDFENCE_INTELLIGENCE_TOKEN  — free v3 feed token (for mode: both); ADR-0013.
+# Never a .env file, never a runner env var.
+#
+# SECURITY: uses `pull_request`, NOT `pull_request_target` (issue #14 / ADR-0012).
 name: Security Scan (Drift)
 
 on:
@@ -22,8 +30,12 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      pantheon-env:
+        description: 'Pantheon env to read (validation: test; production: live).'
+        type: string
+        default: live
       update-baseline:
-        description: 'Re-bless the drift Baseline from live state (opens a PR).'
+        description: 'Re-bless the drift Baseline from that env (opens a PR).'
         type: boolean
         default: false
 
@@ -45,19 +57,47 @@ jobs:
         run: |
           curl -L https://github.com/pantheon-systems/terminus/releases/latest/download/terminus.phar -o /usr/local/bin/terminus
           chmod +x /usr/local/bin/terminus
+
+      # `terminus remote:wp` reads live state over SSH to *.drush.in — authenticated by an
+      # SSH KEY on the Pantheon account, NOT the machine token (the token authenticates the
+      # API only). Write the service-account private key onto the runner; terminus
+      # auto-accepts the drush.in host key, so no ssh-keyscan is needed (ADR-0010 amendment).
+      - name: Configure Pantheon SSH key
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.PANTHEON_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      # The Wordfence v3 feed is ~123 MB and rate-limited to 1 req / 30 min per token, so
+      # fetch it AT MOST once per UTC day and cache it (ADR-0014). The free token is used
+      # only on a cache miss.
+      - id: day
+        run: echo "d=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      - id: feed
+        uses: actions/cache@v4
+        with:
+          path: .wf-feed/feed.json
+          key: wordfence-feed-${{ steps.day.outputs.d }}
+      - if: steps.feed.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .wf-feed
+          curl -sSf -H "Authorization: Bearer ${{ secrets.WORDFENCE_INTELLIGENCE_TOKEN }}" \
+            https://www.wordfence.com/api/intelligence/v3/vulnerabilities/production \
+            -o .wf-feed/feed.json
+
       - uses: philltran/wpcare-security-scan@v0
         with:
           mode: both                          # vuln + drift in one deduped issue
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          wordfence-token: ${{ secrets.WORDFENCE_INTELLIGENCE_TOKEN }}  # free v3 token; required for vuln/both (ADR-0013)
+          feed-path: .wf-feed/feed.json       # read the cached feed; no per-run Wordfence call
           fail-on: low                        # low | medium | high | critical
           pantheon-site: my-site-machine-name # explicit; never derived from the repo name
-          pantheon-env: live                  # the authoritative env
+          pantheon-env: ${{ inputs.pantheon-env || 'live' }}
           pantheon-machine-token: ${{ secrets.PANTHEON_WPCARE_MACHINE_TOKEN }}
 
-  # The re-bless: regenerate the Baseline from live state and open a PR carrying the
-  # diff. Merging the PR is the deliberate re-bless. Elevated permissions are scoped
-  # to THIS dispatch-only job — the scheduled scan above keeps issues:write alone.
+  # The re-bless: regenerate the Baseline from the chosen env and open a PR carrying the
+  # diff. Merging the PR is the deliberate re-bless. Elevated permissions are scoped to
+  # THIS dispatch-only job — the scheduled scan above keeps issues:write alone.
   rebless:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.update-baseline }}
     runs-on: ubuntu-latest
@@ -73,11 +113,16 @@ jobs:
         run: |
           curl -L https://github.com/pantheon-systems/terminus/releases/latest/download/terminus.phar -o /usr/local/bin/terminus
           chmod +x /usr/local/bin/terminus
+      - name: Configure Pantheon SSH key   # SSH-key auth for terminus remote:wp (see scan job)
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.PANTHEON_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
       - uses: philltran/wpcare-security-scan@v0
         with:
           mode: drift
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pantheon-site: my-site-machine-name
-          pantheon-env: live
+          pantheon-env: ${{ inputs.pantheon-env || 'live' }}
           pantheon-machine-token: ${{ secrets.PANTHEON_WPCARE_MACHINE_TOKEN }}
           update-baseline: true

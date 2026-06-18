@@ -2,7 +2,7 @@
 
 Date: 2026-06-15
 
-Status: Accepted
+Status: Accepted (amended 2026-06-18 — see "Amendment: `terminus remote:wp` is SSH-key-gated")
 
 ## Context
 
@@ -125,3 +125,50 @@ scoped to the dispatch job only; normal scheduled/PR drift runs keep `issues: wr
   risk; its confinement to a dedicated org of in-scope sites is the mitigation of record.
 - The re-bless PR path adds `pull-requests: write` to the dispatch job — the only place The
   Action needs more than `issues: write`.
+
+## Amendment (2026-06-18): `terminus remote:wp` is SSH-key-gated — the machine token is not sufficient
+
+The first live exercise of the collector (the real read path run against
+`new-oakland.test`) surfaced an auth assumption this ADR got wrong. The original
+"Collector mechanism" section implied `terminus auth:login --machine-token` is enough to
+read live state. It is not.
+
+`terminus remote:wp` connects over **SSH** to `appserver.<env>.<uuid>.drush.in:2222` and
+authenticates with an **SSH key registered on the Pantheon account** — *not* the machine
+token. The machine token authenticates the Pantheon **API** only (so `auth:whoami` and
+`env:info` succeed while every `remote:wp` read fails `Permission denied (publickey)`
+[Exit 255]). There is no SSH-free alternative: Pantheon exposes no API for arbitrary
+WP-CLI, so `remote:wp`-over-SSH is the only mechanism, and it requires the key.
+
+**Correction to the wiring surface.** The dedicated service account needs **both**
+credentials, and they must belong to the **same** Pantheon user (auth:login picks the
+account from the token; the subsequent SSH authenticates as that account's key):
+
+1. A dedicated keypair (no passphrase — CI cannot supply one; RSA is known-good on
+   drush.in).
+2. Its **public** half registered on the service account once: `terminus ssh-key:add`.
+3. Its **private** half stored as a second GitHub Actions secret —
+   **`PANTHEON_SSH_PRIVATE_KEY`** — alongside `PANTHEON_WPCARE_MACHINE_TOKEN`.
+4. A workflow step writes the private key to `~/.ssh/id_rsa` (mode 600) **before** the
+   Action runs. No `ssh-keyscan` is needed: terminus auto-accepts the drush.in host key
+   (observed — it adds it to `known_hosts` without a prompt), so the cold-runner host-key
+   prompt is a non-issue.
+
+**Two speculative risks this run retired:** the SSH host-key prompt does **not** hang a
+cold runner (auto-accepted), and the collector's three concurrent `remote:wp` reads
+(`Promise.all`) **fail fast rather than deadlock** — so no read-serialization change is
+warranted.
+
+**No collector code change.** `src/collector.mjs` shells `terminus`, which uses the
+runner's ambient SSH; supplying the key is a workflow concern. A missing/invalid key
+surfaces as the loud collector failure this ADR already specifies (red run, zero
+Findings) — never a silent green.
+
+**Validation-env refinement.** This ADR reads **live** as authoritative for production
+drift, and that stands. But a Baseline is only meaningful diffed against the env it was
+blessed from — `siteurl`/`home` and the active-plugin set legitimately differ per env
+(observed: `test` had 8 active plugins and a `*.pantheonsite.io` URL vs other envs). So
+**validation** runs against a non-live env (`test`/multidev) with a Baseline blessed from
+*that same env*; the per-site workflow exposes `pantheon-env` as a dispatch input
+(defaulting to `live`) so a non-live validation needs no file edit, and the schedule
+keeps reading live.
